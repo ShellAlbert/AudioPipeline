@@ -6,6 +6,7 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+#include <arpa/inet.h>
 
 #include <opus/opus.h>
 #include <opus/opus_multistream.h>
@@ -16,18 +17,18 @@
 //data flow.
 //arecord -> zsy.noise -> zns ->zsy.clean -> aplay
 //                            ->zsy.opus  -> android
-#define FILE_NOISE	"/tmp/zsy.noise"
-#define FILE_CLEAN	"/tmp/zsy.clean"
-#define FILE_OPUS	"/tmp/zsy.opus"
+#define FILE_NOISE	"/tmp/zsy/zsy.noise"
+#define FILE_CLEAN	"/tmp/zsy/zsy.clean"
+#define FILE_OPUS	"/tmp/zsy/zsy.opus"
 
 //json ctrl.
 #include "cJSON.h"
-#define FILE_JSON_RX "/tmp/zsy.json.rx"
-#define FILE_JSON_TX "/tmp/zsy.json.tx"
+#define FILE_JSON_RX "/tmp/zsy/zsy.json.rx"
+#define FILE_JSON_TX "/tmp/zsy/zsy.json.tx"
 #define FILE_JSON_CFG "zctrl.json"
 
 //pid file.
-#define FILE_PID    "/tmp/zns.pid"
+#define FILE_PID    "/tmp/zsy/zns.pid"
 
 //Android APP use 48khz,so here keep 48khz.
 #define SAMPLE_RATE  48000 //48khz.
@@ -276,8 +277,9 @@ void *gThreadNs(void *para)
         {
             printf("warning,opus encode bytes is zero.\n");
         }else if(nBytes>0){
-            printf("opus encoder:%d\n",nBytes);
-            len=write(fd_opus,&nBytes,sizeof(nBytes));
+	    int nBytesHtonl=htonl(nBytes);
+            printf("opus encoder:%d,%08x\n",nBytes,nBytes);
+            len=write(fd_opus,&nBytesHtonl,sizeof(nBytes));
             if(len<0)
             {
                 printf("broken fifo at write len:%s\n",FILE_OPUS);
