@@ -6,6 +6,12 @@
 #include <unistd.h>
 #include <fcntl.h>
 #include <pthread.h>
+
+#include <opus/opus.h>
+#include <opus/opus_multistream.h>
+#include <opus/opus_defines.h>
+#include <opus/opus_types.h>
+
 #include "libns/libns.h"
 //data flow.
 //arecord -> zsy.noise -> zns ->zsy.clean -> aplay
@@ -22,15 +28,26 @@
 
 //pid file.
 #define FILE_PID    "/tmp/zns.pid"
+
+//Android APP use 48khz,so here keep 48khz.
+#define SAMPLE_RATE  48000 //48khz.
+//for opus encode/decode.
+#define CHANNELS_NUM            2  //2 channels.
+#define OPUS_PER_CH_10MS     (480*sizeof(opus_int16)) //per channel 48KHz,10ms=480bytes.per channel 48KHz,10ms=480bytes,we use 16-bit ,so here is 480*2=960bytes.
+#define OPUS_BLKFRM_SIZEx2   (OPUS_PER_CH_10MS*CHANNELS_NUM) //2 channels.
+#define OPUS_BITRATE            64000
+
+
 int g_bExitFlag=0;
-int g_nDenoise=0;
 typedef struct
 {
     char m_cam1xy[32];
     char m_cam2xy[32];
     char m_cam3xy[32];
-    char m_denoise[10];
-    char m_strongMode[10];
+    //"DeNoise":"off/Strong/WebRTC/mmse/Bevis/NRAE/query"
+    int m_iDeNoise;
+    //"StrongMode":"mode1/mode2/mode3/mode4/mode5/mode6/mode7/mode8/mode9/mode10/query"
+    int m_iStrongMode;
 }ZCamPara;
 ZCamPara gCamPara;
 
@@ -99,18 +116,21 @@ void *gThreadNs(void *para)
     if(fd_noise<0)
     {
         printf("failed to open %s\n",FILE_NOISE);
+        g_bExitFlag=1;
         return NULL;
     }
     fd_clean=open(FILE_CLEAN,O_RDWR);
     if(fd_clean<0)
     {
         printf("failed to open %s\n",FILE_CLEAN);
+        g_bExitFlag=1;
         return NULL;
     }
     fd_opus=open(FILE_OPUS,O_RDWR|O_NONBLOCK);
     if(fd_opus<0)
     {
         printf("failed to open %s\n",FILE_OPUS);
+        g_bExitFlag=1;
         return NULL;
     }
     //for libns.
@@ -126,14 +146,85 @@ void *gThreadNs(void *para)
     if(ns_custom_init(denoiseAlgorithm, denoiseLevel, enhancedType, enhancedLevel, customBandGains, preEmphasisFlag))
     {
         printf("NoiseCut,failed to init ns_custom_init().\n");
+        g_bExitFlag=1;
         return NULL;
     }
+
+    /** Allocates and initializes a multistream encoder state.
+      * Call opus_multistream_encoder_destroy() to release
+      * this object when finished.
+
+      * @param coupled_streams <tt>int</tt>: Number of coupled (2 channel) streams
+      *                                      to encode.
+      *                                      This must be no larger than the total
+      *                                      number of streams.
+      *                                      Additionally, The total number of
+      *                                      encoded channels (<code>streams +
+      *                                      coupled_streams</code>) must be no
+      *                                      more than the number of input channels.
+      * @param[in] mapping <code>const unsigned char[channels]</code>: Mapping from
+      *                    encoded channels to input channels, as described in
+      *                    @ref opus_multistream. As an extra constraint, the
+      *                    multistream encoder does not allow encoding coupled
+      *                    streams for which one channel is unused since this
+      *                    is never a good idea.
+      * @param application <tt>int</tt>: The target encoder application.
+      *                                  This must be one of the following:
+      * <dl>
+      * <dt>#OPUS_APPLICATION_VOIP</dt>
+      * <dd>Process signal for improved speech intelligibility.</dd>
+      * <dt>#OPUS_APPLICATION_AUDIO</dt>
+      * <dd>Favor faithfulness to the original input.</dd>
+      * <dt>#OPUS_APPLICATION_RESTRICTED_LOWDELAY</dt>
+      * <dd>Configure the minimum possible coding delay by disabling certain modes
+      * of operation.</dd>
+      * </dl>
+      * @param[out] error <tt>int *</tt>: Returns #OPUS_OK on success, or an error
+      *                                   code (see @ref opus_errorcodes) on
+      *                                   failure.
+      */
+    //1.Sampling rate of the input signal (in Hz).48000.
+    //2.Number of channels in the input signal.2 channels.
+    //3.The total number of streams to encode from the input.This must be no more than the number of channels. 0.
+    //4.
+    /*
+     * opus_int32 Fs,
+      int channels,
+      int mapping_family,
+      int *streams,
+      int *coupled_streams,
+      unsigned char *mapping,
+      int application,
+      int *error
+      */
+    int err;
+    int mapping_family=0;
+    int streams=1;
+    int coupled_streams=1;
+    unsigned char stream_map[255];
+    OpusMSEncoder *encoder=opus_multistream_surround_encoder_create(SAMPLE_RATE,2,mapping_family,&streams,&coupled_streams,stream_map,OPUS_APPLICATION_AUDIO,&err);
+    if(err!=OPUS_OK || encoder==NULL)
+    {
+        printf("error at create opus encode:%s.\n",opus_strerror(err));
+        g_bExitFlag=1;
+        return NULL;
+    }
+
+
+    char *pOpusEnc=(char*)malloc(OPUS_PER_CH_10MS*2);
+    if(NULL==pOpusEnc)
+    {
+        printf("error at malloc for opusenc!\n");
+        g_bExitFlag=1;
+        return NULL;
+    }
+
 
     printf("gThreadNs:enter loop\n");
     while(!g_bExitFlag)
     {
         int len;
-        char buffer[960];
+        char buffer[OPUS_PER_CH_10MS];
         //1.read pcm from fifo.
         len=read(fd_noise,buffer,sizeof(buffer));
         if(len<0)
@@ -142,7 +233,7 @@ void *gThreadNs(void *para)
             break;
         }
         //2.process pcm.
-        switch(g_nDenoise)
+        switch(gCamPara.m_iDeNoise)
         {
         case 0://DeNoise Disabled.
             break;
@@ -170,15 +261,38 @@ void *gThreadNs(void *para)
         }
 
         //4.try to write pcm to zsy.opus.
-        len=write(fd_opus,buffer,sizeof(buffer));
-        if(len<0)
+        //param1:<tt>OpusMSEncoder*</tt>: Multistream encoder state.
+        //param2:<tt>const opus_int16*</tt>: The input signal as interleaved samples.
+        //       This must contain <code>frame_size*channels</code> samples.
+        //param3:<tt>int</tt>:Number of samples per channel in the input signal.
+        //       This must be an Opus frame size for the encoder's sampling rate.
+        //       For example, at 48 kHz the permitted values are 120, 240, 480, 960, 1920, and 2880.
+        //       Passing in a duration of less than 10 ms (480 samples at 48 kHz) will prevent the encoder from using the LPC or hybrid modes.
+        int nBytes=opus_multistream_encode(encoder,(const opus_int16*)buffer,OPUS_PER_CH_10MS,pOpusEnc,OPUS_PER_CH_10MS*2);
+        if(nBytes<0)
         {
-            printf("broken fifo %s\n",FILE_OPUS);
+            printf("error at opus_encode():%s\n",opus_strerror(nBytes));
+        }else if(nBytes==0)
+        {
+            printf("warning,opus encode bytes is zero.\n");
+        }else if(nBytes>0){
+            printf("opus encoder:%d\n",nBytes);
+            len=write(fd_opus,&nBytes,sizeof(nBytes));
+            if(len<0)
+            {
+                printf("broken fifo at write len:%s\n",FILE_OPUS);
+            }
+            len=write(fd_opus,pOpusEnc,nBytes);
+            if(len<0)
+            {
+                printf("broken fifo at write data:%s\n",FILE_OPUS);
+            }
         }
     }
     close(fd_noise);
     close(fd_clean);
     close(fd_opus);
+    free(pOpusEnc);
     printf("gThreadNs:exit.\n");
     return NULL;
 }
@@ -333,7 +447,7 @@ int gParseJson(char *jsonData,int jsonLen,int fd)
         write(fd,pJson,iJsonLen);
         cJSON_Delete(rootTx);
     }
-
+    //"DeNoise":"off/Strong/WebRTC/mmse/Bevis/NRAE/query"
     cJSON *jDeNoise=cJSON_GetObjectItem(rootRx,"DeNoise");
     if(jDeNoise)
     {
@@ -342,17 +456,18 @@ int gParseJson(char *jsonData,int jsonLen,int fd)
         {
             //only query,no need to write.
             bWrCfgFile=0;
-        }else{
-            if(strlen(cValue)<sizeof(gCamPara.m_denoise))
-            {
-                strcpy(gCamPara.m_denoise,cValue);
-            }else{
-                printf("too long DeNoise!\n");
-            }
+        }else if(!strcmp(cValue,"off")){
+            gCamPara.m_iDeNoise=0;
+        }else if(!strcmp(cValue,"Strong")){
+            gCamPara.m_iDeNoise=1;
+        }else if(!strcmp(cValue,"WebRTC")){
+            gCamPara.m_iDeNoise=2;
+        }else if(!strcmp(cValue,"NRAE")){
+            gCamPara.m_iDeNoise=3;
         }
         //write feedback to tx fifo.
         cJSON *rootTx=cJSON_CreateObject();
-        cJSON *item=cJSON_CreateString(gCamPara.m_denoise);
+        cJSON *item=cJSON_CreateString(cValue);
         cJSON_AddItemToObject(rootTx,"DeNoise",item);
         char *pJson=cJSON_Print(rootTx);
         int iJsonLen=strlen(pJson);
@@ -360,7 +475,7 @@ int gParseJson(char *jsonData,int jsonLen,int fd)
         write(fd,pJson,iJsonLen);
         cJSON_Delete(rootTx);
     }
-
+    //"StrongMode":"mode1/mode2/mode3/mode4/mode5/mode6/mode7/mode8/mode9/mode10/query"
     cJSON *jStrongMode=cJSON_GetObjectItem(rootRx,"StrongMode");
     if(jStrongMode)
     {
@@ -369,13 +484,26 @@ int gParseJson(char *jsonData,int jsonLen,int fd)
         {
             //only query,no need to write.
             bWrCfgFile=0;
-        }else{
-            if(strlen(cValue)<sizeof(gCamPara.m_strongMode))
-            {
-                strcpy(gCamPara.m_strongMode,cValue);
-            }else{
-                printf("too long StrongMode!\n");
-            }
+        }else if(!strcmp(cValue,"mode1")){
+            gCamPara.m_iStrongMode=1;
+        }else if(!strcmp(cValue,"mode2")){
+            gCamPara.m_iStrongMode=2;
+        }else if(!strcmp(cValue,"mode3")){
+            gCamPara.m_iStrongMode=3;
+        }else if(!strcmp(cValue,"mode4")){
+            gCamPara.m_iStrongMode=4;
+        }else if(!strcmp(cValue,"mode5")){
+            gCamPara.m_iStrongMode=5;
+        }else if(!strcmp(cValue,"mode6")){
+            gCamPara.m_iStrongMode=6;
+        }else if(!strcmp(cValue,"mode7")){
+            gCamPara.m_iStrongMode=7;
+        }else if(!strcmp(cValue,"mode8")){
+            gCamPara.m_iStrongMode=8;
+        }else if(!strcmp(cValue,"mode9")){
+            gCamPara.m_iStrongMode=9;
+        }else if(!strcmp(cValue,"mode10")){
+            gCamPara.m_iStrongMode=10;
         }
         //4.write feedback to tx fifo.
         cJSON *root=cJSON_CreateObject();
@@ -431,6 +559,8 @@ int gLoadCfgFile(ZCamPara *para)
         strcpy(para->m_cam1xy,"0,0");
         strcpy(para->m_cam2xy,"0,0");
         strcpy(para->m_cam3xy,"0,0");
+        para->m_iDeNoise=0;
+        para->m_iStrongMode=1;
         return -1;
     }
 

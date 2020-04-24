@@ -36,12 +36,21 @@ amixer -c tegrasndt186ref cset name='I2S2 input bit format' '32'
 #i2s1 (record):plughw:tegrasndt186ref,1
 #i2s1 --> fifo --> i2s0
 mkfifo /tmp/zsy.noise
+chmod 777 /tmp/zsy.noise
+
 mkfifo /tmp/zsy.clean
+chmod 777 /tmp/zsy.clean
+
 mkfifo /tmp/zsy.opus
+chmod 777 /tmp/zsy.opus
 
 #json ctrl fifo.
 mkfifo /tmp/zsy.json.rx
+chmod 777 /tmp/zsy.json.rx
+
 mkfifo /tmp/zsy.json.tx
+chmod 777 /tmp/zsy.json.tx
+
 nc -l 6802 -k > /tmp/zsy.json.rx  < /tmp/zsy.json.tx &
 
 #tcp<->uart.

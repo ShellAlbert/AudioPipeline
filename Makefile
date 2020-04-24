@@ -31,6 +31,6 @@ WEBRTC= webrtc/analog_agc.c \
         webrtc/spl_init.c        \
         webrtc/vector_scaling_operations.c
 INCFLAGS = -I. -I/home/yntp16/Downloads/cJSON
-LDFLAGS = -Llibns -lns -lpthread -lm -lcjson
+LDFLAGS = -Llibns -lns -lpthread -lm -lcjson -lopus
 all:
-	gcc zsyns.c $(INCFLAGS) $(LDFLAGS) -o zsyns.bin
+	gcc zns.c $(INCFLAGS) $(LDFLAGS) -o zns.bin
