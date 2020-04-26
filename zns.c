@@ -8,6 +8,7 @@
 #include <pthread.h>
 #include <arpa/inet.h>
 
+#define OPUS_SET_BITRATE 64000
 #include <opus/opus.h>
 #include <opus/opus_multistream.h>
 #include <opus/opus_defines.h>
@@ -25,8 +26,7 @@
 #include "cJSON.h"
 #define FILE_JSON_RX "/tmp/zsy/zsy.json.rx"
 #define FILE_JSON_TX "/tmp/zsy/zsy.json.tx"
-#define FILE_JSON_CFG "zctrl.json"
-
+#define FILE_JSON_CFG "zns.json"
 //pid file.
 #define FILE_PID    "/tmp/zsy/zns.pid"
 
@@ -35,8 +35,7 @@
 //for opus encode/decode.
 #define CHANNELS_NUM            2  //2 channels.
 #define OPUS_PER_CH_10MS     (480*sizeof(opus_int16)) //per channel 48KHz,10ms=480bytes.per channel 48KHz,10ms=480bytes,we use 16-bit ,so here is 480*2=960bytes.
-#define OPUS_BLKFRM_SIZEx2   (OPUS_PER_CH_10MS*CHANNELS_NUM) //2 channels.
-#define OPUS_BITRATE            64000
+#define OPUS_TWO_CH_10MS     (480*sizeof(opus_int16)*2)
 
 
 int g_bExitFlag=0;
@@ -151,6 +150,14 @@ void *gThreadNs(void *para)
         return NULL;
     }
 
+    char *pOpusEnc=(char*)malloc(480*sizeof(opus_int16)*2*2);
+    if(NULL==pOpusEnc)
+    {
+        printf("error at malloc for opusenc!\n");
+        g_bExitFlag=1;
+        return NULL;
+    }
+
     /** Allocates and initializes a multistream encoder state.
       * Call opus_multistream_encoder_destroy() to release
       * this object when finished.
@@ -203,7 +210,9 @@ void *gThreadNs(void *para)
     int streams=1;
     int coupled_streams=1;
     unsigned char stream_map[255];
-    OpusMSEncoder *encoder=opus_multistream_surround_encoder_create(SAMPLE_RATE,2,mapping_family,&streams,&coupled_streams,stream_map,OPUS_APPLICATION_AUDIO,&err);
+    //Sampling rate of the input signal (in Hz).
+    //This must be one of 8000, 12000, 16000,24000, or 48000.
+    OpusMSEncoder *encoder=opus_multistream_surround_encoder_create(48000,2,mapping_family,&streams,&coupled_streams,stream_map,OPUS_APPLICATION_AUDIO,&err);
     if(err!=OPUS_OK || encoder==NULL)
     {
         printf("error at create opus encode:%s.\n",opus_strerror(err));
@@ -211,21 +220,11 @@ void *gThreadNs(void *para)
         return NULL;
     }
 
-
-    char *pOpusEnc=(char*)malloc(OPUS_PER_CH_10MS*2);
-    if(NULL==pOpusEnc)
-    {
-        printf("error at malloc for opusenc!\n");
-        g_bExitFlag=1;
-        return NULL;
-    }
-
-
     printf("gThreadNs:enter loop\n");
     while(!g_bExitFlag)
     {
         int len;
-        char buffer[OPUS_PER_CH_10MS];
+        char buffer[480*sizeof(opus_int16)*2];
         //1.read pcm from fifo.
         len=read(fd_noise,buffer,sizeof(buffer));
         if(len<0)
@@ -269,7 +268,19 @@ void *gThreadNs(void *para)
         //       This must be an Opus frame size for the encoder's sampling rate.
         //       For example, at 48 kHz the permitted values are 120, 240, 480, 960, 1920, and 2880.
         //       Passing in a duration of less than 10 ms (480 samples at 48 kHz) will prevent the encoder from using the LPC or hybrid modes.
-        int nBytes=opus_multistream_encode(encoder,(const opus_int16*)buffer,OPUS_PER_CH_10MS,pOpusEnc,OPUS_PER_CH_10MS*2);
+        //param4:<tt>unsigned char*</tt>:Output payload.This must contain storage for at least max_data_bytes.
+        //param5:<tt>opus_int32</tt>: Size of the allocated memory for the output  payload.
+        //       This may be used to impose an upper limit on the instant bitrate, but should not be used as the only bitrate control.
+        //       Use #OPUS_SET_BITRATE to control the bitrate.
+        int nBytes=opus_multistream_encode(encoder,///<
+                                           //frame_size*channels.
+                                           //frame_size=480*sizeof(opus_int16).
+                                           (const opus_int16*)buffer,///<
+                                           //Number of samples per channel in the input signal.
+                                           //each sample is 480*sizeof(opus_int16).
+                                           480*sizeof(opus_int16),///<
+                                           pOpusEnc,///<
+                                           480*sizeof(opus_int16)*2*2);
         if(nBytes<0)
         {
             printf("error at opus_encode():%s\n",opus_strerror(nBytes));
