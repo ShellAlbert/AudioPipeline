@@ -37,7 +37,6 @@
 #define OPUS_PER_CH_10MS     (480*sizeof(opus_int16)) //per channel 48KHz,10ms=480bytes.per channel 48KHz,10ms=480bytes,we use 16-bit ,so here is 480*2=960bytes.
 #define OPUS_TWO_CH_10MS     (480*sizeof(opus_int16)*2)
 
-
 int g_bExitFlag=0;
 typedef struct
 {
@@ -226,6 +225,8 @@ void *gThreadNs(void *para)
         g_bExitFlag=1;
         return NULL;
     }
+
+#ifdef ZDECODER
     //param1:Fs <tt>opus_int32</tt>: Sampling rate to decode at (in Hz).This must be one of 8000, 12000, 16000,24000, or 48000.
     //param2:channels <tt>int</tt>: Number of channels to output.
     //param3:streams <tt>int</tt>: The total number of streams coded in the input.This must be no more than 255.
@@ -251,6 +252,7 @@ void *gThreadNs(void *para)
         g_bExitFlag=1;
         return NULL;
     }
+#endif
 
     printf("gThreadNs:enter loop\n");
     while(!g_bExitFlag)
@@ -283,16 +285,6 @@ void *gThreadNs(void *para)
         default:
             break;
         }
-
-        //3.write pcm to zsy.clean for local playback.
-#if 0
-        len=write(fd_clean,buffer,sizeof(buffer));
-        if(len<0)
-        {
-            printf("error at write %s\n",FILE_CLEAN);
-            break;
-        }
-#endif
 
         //4.try to write pcm to zsy.opus.
         //param1:<tt>OpusMSEncoder*</tt>: Multistream encoder state.
@@ -340,6 +332,8 @@ void *gThreadNs(void *para)
                 printf("broken fifo at write data:%s\n",FILE_OPUS);
 #endif
             }
+
+#ifdef ZDECODER
             //decoder & write to zsy.clean for local playback.
             //param1:<tt>OpusMSDecoder*</tt>: Multistream decoder state.
             //param2:<tt>const unsigned char*</tt>: Input payload.
@@ -360,6 +354,7 @@ void *gThreadNs(void *para)
             if(iDecBytes>0)
             {
                 printf("decoder %d bytes\n",iDecBytes);
+                //write decoder pcm to zsy.clean for local playback.
         	len=write(fd_clean,buffer,sizeof(buffer));
         	if(len<0)
 		{
@@ -368,6 +363,14 @@ void *gThreadNs(void *para)
             }else{
 		    printf("decoder failed!\n");
 	    }
+#else
+            //write pcm to zsy.clean for local playback.
+            len=write(fd_clean,buffer,sizeof(buffer));
+            if(len<0)
+            {
+                printf("error at write %s\n",FILE_CLEAN);
+            }
+#endif
         }
     }
     close(fd_noise);
@@ -375,7 +378,9 @@ void *gThreadNs(void *para)
     close(fd_opus);
     free(pOpusEnc);
     opus_multistream_encoder_destroy(encoder);
+#ifdef ZDECODER
     opus_multistream_decoder_destroy(decoder);
+#endif
     printf("gThreadNs:exit.\n");
     return NULL;
 }
