@@ -96,22 +96,6 @@ do
 		fi
 	fi
 
-	#check opus pid.
-	if [ ! $pid_opus ];then
-		nc -l 6801 -k < $TMP_DIR/zsy.opus &
-		pid_opus=$!
-		echo $pid_opus > /tmp/zsy/opus.pid
-		echo "restart opus pid okay:" $pid_opus
-	else
-		kill -0 $pid_opus
-		if [ $? -eq 0 ];then
-			echo "opus pid okay:" $pid_opus
-		else
-			echo "opus pid error"
-			pid_opus=
-		fi
-	fi
-
 	#check json pid.
 	if [ ! $pid_json ];then
 		nc -l 6802 -k > $TMP_DIR/zsy.json.rx  < $TMP_DIR/zsy.json.tx &
@@ -145,20 +129,20 @@ do
 	fi
 
 	#check zns pid.
-	if [ ! $pid_zns ];then
-		./zns &
-		pid_zns=$!
-		echo $pid_zns > /tmp/zsy/zns.pid
-		echo "restart zns pid okay:" $pid_zns
-	else
-		kill -0 $pid_zns
-		if [ $? -eq 0 ];then
-			echo "zns pid okay:" $pid_zns
-		else
-			echo "zns pid error"
-			pid_zns=
-		fi
-	fi
+	#if [ ! $pid_zns ];then
+	#	./zns &
+	#	pid_zns=$!
+	#	echo $pid_zns > /tmp/zsy/zns.pid
+	#	echo "restart zns pid okay:" $pid_zns
+	#else
+	#	kill -0 $pid_zns
+	#	if [ $? -eq 0 ];then
+	#		echo "zns pid okay:" $pid_zns
+	#	else
+	#		echo "zns pid error"
+	#		pid_zns=
+	#	fi
+	#fi
 	sleep 5
 done
 exit 0
