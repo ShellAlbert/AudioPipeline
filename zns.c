@@ -212,10 +212,42 @@ void *gThreadNs(void *para)
     unsigned char stream_map[255];
     //Sampling rate of the input signal (in Hz).
     //This must be one of 8000, 12000, 16000,24000, or 48000.
-    OpusMSEncoder *encoder=opus_multistream_surround_encoder_create(48000,2,mapping_family,&streams,&coupled_streams,stream_map,OPUS_APPLICATION_AUDIO,&err);
+    OpusMSEncoder *encoder=opus_multistream_surround_encoder_create(48000,///<
+                                                                    2,///<
+                                                                    mapping_family,///<
+                                                                    &streams,///<
+                                                                    &coupled_streams,///<
+                                                                    stream_map,///<
+                                                                    OPUS_APPLICATION_AUDIO,///<
+                                                                    &err);
     if(err!=OPUS_OK || encoder==NULL)
     {
         printf("error at create opus encode:%s.\n",opus_strerror(err));
+        g_bExitFlag=1;
+        return NULL;
+    }
+    //param1:Fs <tt>opus_int32</tt>: Sampling rate to decode at (in Hz).This must be one of 8000, 12000, 16000,24000, or 48000.
+    //param2:channels <tt>int</tt>: Number of channels to output.
+    //param3:streams <tt>int</tt>: The total number of streams coded in the input.This must be no more than 255.
+    //param4:coupled_streams <tt>int</tt>: Number of streams to decode as coupled (2 channel) streams.
+    //param5:mapping <code>const unsigned char[channels]</code>.
+    //return:@param[out] error <tt>int *</tt>: Returns #OPUS_OK on success.
+    OpusMSDecoder *decoder=opus_multistream_decoder_create(48000,///<
+                                                           2,///<
+                                                           streams,///<
+                                                           coupled_streams,///<
+                                                           stream_map,///<
+                                                           &err);
+    if(err!=OPUS_OK || decoder==NULL)
+    {
+        printf("error at create opus decoder:%s.\n",opus_strerror(err));
+        g_bExitFlag=1;
+        return NULL;
+    }
+    char *cBufOpusDec=(char*)malloc(480*sizeof(opus_int16)*2*2);
+    if(cBufOpusDec==NULL)
+    {
+        printf("error at allocate cBufOpusDec\n");
         g_bExitFlag=1;
         return NULL;
     }
@@ -253,12 +285,14 @@ void *gThreadNs(void *para)
         }
 
         //3.write pcm to zsy.clean for local playback.
+#if 0
         len=write(fd_clean,buffer,sizeof(buffer));
         if(len<0)
         {
             printf("error at write %s\n",FILE_CLEAN);
             break;
         }
+#endif
 
         //4.try to write pcm to zsy.opus.
         //param1:<tt>OpusMSEncoder*</tt>: Multistream encoder state.
@@ -288,24 +322,60 @@ void *gThreadNs(void *para)
         {
             printf("warning,opus encode bytes is zero.\n");
         }else if(nBytes>0){
-	    int nBytesHtonl=htonl(nBytes);
+	    //int nBytesHtonl=htonl(nBytes);
+#ifdef ZDEBUG	   
             printf("opus encoder:%d,%08x\n",nBytes,nBytes);
-            len=write(fd_opus,&nBytesHtonl,sizeof(nBytes));
+#endif
+            len=write(fd_opus,&nBytes,sizeof(nBytes));
             if(len<0)
             {
+#ifdef ZDEBUG
                 printf("broken fifo at write len:%s\n",FILE_OPUS);
+#endif
             }
             len=write(fd_opus,pOpusEnc,nBytes);
             if(len<0)
             {
+#ifdef ZDEBUG
                 printf("broken fifo at write data:%s\n",FILE_OPUS);
+#endif
             }
+            //decoder & write to zsy.clean for local playback.
+            //param1:<tt>OpusMSDecoder*</tt>: Multistream decoder state.
+            //param2:<tt>const unsigned char*</tt>: Input payload.
+            //       Use a <code>NULL</code> pointer to indicate packet loss.
+            //param3:<tt>opus_int32</tt>: Number of bytes in payload.
+            //param4:<tt>opus_int16*</tt>: Output signal, with interleaved samples.
+            //       This must contain room for <code>frame_size*channels</code> samples.
+            //param5:<tt>int</tt>: The number of samples per channel of available space in \a pcm.
+            //param6:decode_fec <tt>int</tt>: Flag (0 or 1) to request that any in-band
+            //       forward error correction data be decoded.If no such data is available, the frame is decoded as if it were lost.
+            //@returns Number of samples decoded on success or a negative error code.
+            int iDecBytes=opus_multistream_decode(decoder,///<
+                                                  pOpusEnc,///<
+                                                  nBytes,///<
+                                                  (opus_int16*)cBufOpusDec,///<
+                                                  480*sizeof(opus_int16),///<
+                                                  0);
+            if(iDecBytes>0)
+            {
+                printf("decoder %d bytes\n",iDecBytes);
+        	len=write(fd_clean,buffer,sizeof(buffer));
+        	if(len<0)
+		{
+			printf("failed to write zsy.clean!\n");
+		}
+            }else{
+		    printf("decoder failed!\n");
+	    }
         }
     }
     close(fd_noise);
     close(fd_clean);
     close(fd_opus);
     free(pOpusEnc);
+    opus_multistream_encoder_destroy(encoder);
+    opus_multistream_decoder_destroy(decoder);
     printf("gThreadNs:exit.\n");
     return NULL;
 }
@@ -342,7 +412,7 @@ void *gThreadJson(void *para)
             printf("error at read %s\n",FILE_JSON_RX);
             break;
         }
-        if(iJsonLen==0 || iJsonLen>=512)
+        if(iJsonLen<=0 || iJsonLen>=512)
         {
             //something wrong.
             usleep(1000*100);
@@ -352,10 +422,10 @@ void *gThreadJson(void *para)
 
         //2.read N bytes json data from rx fifo.
         len=read(fd_json_rx,cJsonRx,iJsonLen);
-        if(len<0)
+        if(len<=0)
         {
             printf("error at read %s\n",FILE_JSON_RX);
-            break;
+	    continue;
         }
         cJsonRx[len]='\0';
 
@@ -640,7 +710,7 @@ int gLoadCfgFile(ZCamPara *para)
 int gSaveCfgFile(ZCamPara *para)
 {
     int fd;
-    if((fd=open(FILE_JSON_CFG,O_RDWR))<0)
+    if((fd=open(FILE_JSON_CFG,O_RDWR|O_CREAT))<0)
     {
         printf("failed to open %s\n",FILE_JSON_CFG);
         return -1;
@@ -658,6 +728,7 @@ int gSaveCfgFile(ZCamPara *para)
 
     char *pJson=cJSON_Print(root);
     write(fd,pJson,strlen(pJson));
+    close(fd);
     cJSON_Delete(root);
     return 0;
 }
