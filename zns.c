@@ -729,6 +729,7 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 		cJSON_Delete(root);
 	}
 
+	//SpkPlaybackVol
 	cJSON * 		jSpkPlaybackVol = cJSON_GetObjectItem(rootRx, "SpkPlaybackVol");
 
 	if (jSpkPlaybackVol) {
@@ -744,8 +745,10 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 		if (iValue >= 0 && iValue <= 30) {
 			char			command[512];
 
-			sprintf(command, "amixer -c tegrasndt186ref cset name=\"MVC1 Vol\" %d", iValue * 534);
-			system(command);
+			//sprintf(command, "amixer -c tegrasndt186ref cset name=\"MVC1 Vol\" %d", iValue * 534);
+			//system(command);
+			//
+			system("spidev_test -D /dev/spidev3.0 -H -p \"\x80\x00\x00\x00\x00\x00\x00\x64\"");
 		}
 
 		//write feedback to tx fifo.
@@ -759,6 +762,25 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 		write(fd, &iJsonLen, sizeof(iJsonLen));
 		write(fd, pJson, iJsonLen);
 		cJSON_Delete(root);
+	}
+
+	//DeMode=Normal/Wobble/query
+	cJSON * 		jDeMode = cJSON_GetObjectItem(rootRx, "DeMode");
+
+	if (jDeMode) {
+		char *			cValue = cJSON_Print(jDeMode);
+
+		printf("DeMode:%s\n", cValue);
+
+		if (!strcmp(cValue, "query")) {
+			//only query,no need to write.
+		}
+		else if (!strcmp(cValue, "Normal")) {
+			system("spidev_test -D /dev/spidev3.0 -H -p \"\x80\x00\x01\x00\x00\x00\x00\x00\"");
+		}
+		else if (!strcmp(cValue, "Wobble")) {
+			system("spidev_test -D /dev/spidev3.0 -H -p \"\x80\x00\x01\x00\x00\x00\x00\x01\"");
+		}
 	}
 
 	cJSON_Delete(rootRx);
