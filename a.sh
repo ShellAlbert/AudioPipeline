@@ -82,7 +82,9 @@ do
 	
 	#check aplay pid.
 	if [ ! $pid_play ];then
-		aplay -D plughw:tegrasndt186ref,0 -r 32000 -f S32_LE -c 2 -t raw < $TMP_DIR/zsy.clean &
+		aplay -D plughw:tegrasndt186ref,0 -r 32000 -f S16_LE -c 2 -t raw < $TMP_DIR/zsy.clean &
+		#aplay -D plughw:tegrasndt186ref,0 -r 32000 -f S32_LE -c 2 -t raw < $TMP_DIR/zsy.clean &
+		#aplay -D plughw:tegrasndt186ref,0 -r 48000 -f S32_LE -c 2 -t raw < $TMP_DIR/zsy.clean &
 		#cat < $TMP_DIR/zsy.clean > /dev/null &
 		pid_play=$!
 		echo $pid_play > /tmp/zsy/play.pid
