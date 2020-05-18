@@ -1,0 +1,119 @@
+///////////////////////////////////////////////////////
+1、defines variables  
+
+#ifdef RESAMPLE_25k_16k
+	int16_t urState2550;
+	int16_t urState4850;	
+	int16_t urState5096;	
+	int16_t urState5048;
+	int16_t urState2516;
+
+	WebRtcSpl_State48khzTo16khz state4816;
+	WebRtcSpl_State16khzTo48khz state1648;
+	
+	int32_t DownsampleBy2_filtState1[8] = { 0 };
+	int32_t UpsampleBy2_filtState1[8] = { 0 };
+#endif
+
+///////////////////////////////////////////////////////
+2、initiates variables 
+
+#ifdef RESAMPLE_25k_16k
+		urState2550 = 32767;
+		urState4850 = 32767;	
+		urState5096 = 32767;	
+		urState5048 = 32767;
+		urState2516 = 32767;
+	
+		WebRtcSpl_ResetResample48khzTo16khz(&state4816);
+		WebRtcSpl_ResetResample16khzTo48khz(&state1648);
+		
+		memset(DownsampleBy2_filtState1, 0, sizeof(DownsampleBy2_filtState1));
+		memset(UpsampleBy2_filtState1, 0, sizeof(UpsampleBy2_filtState1));
+
+#endif
+
+
+///////////////////////////////////////////////////////
+3、declares and defines the func
+
+#ifdef RESAMPLE_25k_16k
+
+//declare the func of universal resample.
+static void UniversalResample(const int16_t* src, const int src_len, int16_t* dst, const int dst_len, int16_t* resample_state);
+
+//defines the func of universal resample.
+static void UniversalResample(const int16_t* src, const int src_len, int16_t* dst, const int dst_len, int16_t* resample_state)
+{
+#if 0
+	if ((src_len == 0) || (dst_len == 0))
+		return;
+
+	if (src_len == dst_len)
+	{
+		memcpy(dst, src, src_len * sizeof(int16_t));
+		return;
+	}
+#endif
+
+	if ((*resample_state) == 32767)
+		*resample_state = (src[0] >> 1);
+
+	int j = 0, mod = 0, tmp = 0;
+	dst[0] = (*resample_state);
+	for (int i = 1; i < dst_len; i++)
+	{
+		tmp = i * src_len;
+		j = tmp / dst_len;
+		mod = tmp % dst_len;
+
+		if (j == 0)
+			dst[i] = (int16_t)((((float)(*resample_state) * (dst_len - mod)) / dst_len) + (((float)src[j] * mod) / dst_len));
+		else
+			dst[i] = (int16_t)((((float)src[j - 1] * (dst_len - mod)) / dst_len) + (((float)src[j] * mod) / dst_len));		
+	}
+
+	*resample_state = src[src_len - 1];
+
+	return;
+}
+
+#endif
+
+///////////////////////////////////////////////////////
+4、An example to call the func of universal resample.
+		it implements the resampling: 48kHz ==> 50kHz ==> 96kHz ==> 48kHz ==> 16kHz.
+		
+#ifdef RESAMPLE_25k_16k
+	#define FRAME_SIZE 480
+	
+	int16_t *tmp48 = (int16_t*)malloc(FRAME_SIZE * sizeof(int16_t));
+	memset(tmp48, 0, FRAME_SIZE * sizeof(int16_t));
+	int32_t *tmpmem = (int32_t*)malloc((FRAME_SIZE + 480)* sizeof(int32_t));
+	memset(tmpmem, 0, (FRAME_SIZE + 480) * sizeof(int32_t));
+	int16_t tmp16[160] = { 0 };
+	int16_t tmp25[250] = { 0 };
+	int16_t tmp50[500] = { 0 };
+	int16_t tmp96[960] = { 0 };
+
+	memcpy(tmp48, (char*)(pInBuffer + i), FRAME_SIZE * sizeof(int16_t)); //reads a frame of data from the buffer(pInBuffer) of the 48k audio file.
+
+	///////48kHz ==> 50kHz ==> 96kHz ==> 48kHz ==> 16kHz
+	
+	//WebRtcSpl_UpsampleBy2(tmp25, 250, tmp50, UpsampleBy2_filtState1); //25kHz ==> 50kHz.
+	
+	//UniversalResample(tmp25, 250, tmp50, 500, &urState2550);  //25kHz ==> 50kHz.
+	
+	UniversalResample(tmp48, 480, tmp50, 500, &urState4850);  //48kHz ==> 50kHz.
+	
+	//UniversalResample(tmp25, 250, tmp16, 160, &urState2516);  //25kHz ==> 16kHz.	
+	
+	UniversalResample(tmp50, 500, tmp96, 960, &urState5096); //50kHz ==> 96kHz.
+	
+	//UniversalResample(tmp50, 500, tmp48, 480, &urState5048); //50kHz ==> 48kHz.	
+	
+	WebRtcSpl_DownsampleBy2(tmp96, 960, tmp48, DownsampleBy2_filtState1); //96kHz ==> 48kHz
+	
+	WebRtcSpl_Resample48khzTo16khz(tmp48, tmp16, &state4816, tmpmem); //48kHz ==> 16kHz
+
+#endif					
