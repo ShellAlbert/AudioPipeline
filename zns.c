@@ -15,25 +15,7 @@
 #include <opus/opus_types.h>
 
 #include "libns/libns.h"
-#include "analog_agc.h"
-#include "defines.h"
-#include "gain_control.h"
-#include "ns_core.h"
-#include "real_fft.h"
-#include "signal_processing_library.h"
-#include "windows_private.h"
-#include "complex_fft_tables.h"
-#include "digital_agc.h"
-#include "noise_suppression.h"
-#include "nsx_core.h"
-#include "resample_by_2_internal.h"
-#include "spl_inl.h"
-#include "cpu_features_wrapper.h"
-#include "fft4g.h"
-#include "noise_suppression_x.h"  
-#include "nsx_defines.h"
-#include "ring_buffer.h"
-#include "typedefs.h"
+#include "zcvt.h"
 
 //data flow.
 //arecord -> zsy.noise -> zns ->zsy.clean -> aplay
@@ -60,8 +42,10 @@
 #define MAX_FRAME_SIZE			6*960
 #define MAX_PACKET_SIZE 		(3*1276)
 
-#define RESAMPLE_25k_16k		1
-
+//i2s in.
+//32khz,32bit
+#define BYTES_PER_SAMPLE_32BIT    4 //32bit=4bytes.
+#define BYTES_PER_SAMPLE_16BIT  2//16bit=2bytes.
 typedef struct {
 	char			m_cam1xy[32];
 	char			m_cam2xy[32];
@@ -167,93 +151,8 @@ int main(int argc, char * *argv)
 	return 0;
 }
 
-
-#ifdef RESAMPLE_25k_16k
-
-//declare the func of universal resample.
-static void UniversalResample(const int16_t * src, const int src_len, int16_t * dst, const int dst_len, 
-	int16_t * resample_state);
-
-//defines the func of universal resample.
-static void UniversalResample(const int16_t * src, const int src_len, int16_t * dst, const int dst_len, 
-	int16_t * resample_state)
-{
-#if 0
-
-	if ((src_len == 0) || (dst_len == 0))
-		return;
-
-	if (src_len == dst_len) {
-		memcpy(dst, src, src_len * sizeof(int16_t));
-		return;
-	}
-
-#endif
-
-	if ((*resample_state) == 32767)
-		*resample_state = (src[0] >> 1);
-
-	int 			j	= 0, mod = 0, tmp = 0;
-
-	dst[0]				= (*resample_state);
-
-	for (int i = 1; i < dst_len; i++) {
-		tmp 				= i * src_len;
-		j					= tmp / dst_len;
-		mod 				= tmp % dst_len;
-
-		if (j == 0)
-			dst[i] =
-				 (int16_t) ((((float) (*resample_state) * (dst_len - mod)) / dst_len) + (((float) src[j] *mod) / dst_len));
-		else 
-			dst[i] =
-				 (int16_t) ((((float) src[j - 1] * (dst_len - mod)) / dst_len) + (((float) src[j] *mod) / dst_len));
-	}
-
-	*resample_state 	= src[src_len - 1];
-
-	return;
-}
-
-
-#endif
-
-
 void * gThreadNs(void * para)
 {
-#ifdef RESAMPLE_25k_16k
-	int16_t 		urState2550;
-	int16_t 		urState4850;
-	int16_t 		urState5096;
-	int16_t 		urState5048;
-	int16_t 		urState2516;
-
-	WebRtcSpl_State48khzTo16khz state4816;
-	WebRtcSpl_State16khzTo48khz state1648;
-
-	int32_t 		DownsampleBy2_filtState1[8] = {
-		0
-	};
-	int32_t 		UpsampleBy2_filtState1[8] = {
-		0
-	};
-#endif
-
-#ifdef RESAMPLE_25k_16k
-	urState2550 		= 32767;
-	urState4850 		= 32767;
-	urState5096 		= 32767;
-	urState5048 		= 32767;
-	urState2516 		= 32767;
-
-	WebRtcSpl_ResetResample48khzTo16khz(&state4816);
-	WebRtcSpl_ResetResample16khzTo48khz(&state1648);
-
-	memset(DownsampleBy2_filtState1, 0, sizeof(DownsampleBy2_filtState1));
-	memset(UpsampleBy2_filtState1, 0, sizeof(UpsampleBy2_filtState1));
-
-#endif
-
 	//for mkfifo in&out.
 	int 			fd_noise, fd_clean;
 
@@ -272,10 +171,13 @@ void * gThreadNs(void * para)
 		g_bExitFlag 		= 1;
 		return NULL;
 	}
-
+	//sample rate convret.
+	zcvt_init();
+	
 	//for libns.
 	//here call ns_init() or ns_custom_init() for call ns_uninit() later.
 	ns_init(0); 									//0~5.
+#if 0
 	int 			denoiseAlgorithm = 3;
 	int 			denoiseLevel = 0;
 	int 			enhancedType = 0;
@@ -290,41 +192,41 @@ void * gThreadNs(void * para)
 		g_bExitFlag 		= 1;
 		return NULL;
 	}
-
+#endif
 
 	/** Allocates and initializes a multistream encoder state.
-		* Call opus_multistream_encoder_destroy() to release
-		* this object when finished.
+	 * Call opus_multistream_encoder_destroy() to release
+	 * this object when finished.
 
-		* @param coupled_streams <tt>int</tt>: Number of coupled (2 channel) streams
-		*									 to encode.
-		*									 This must be no larger than the total
-		*									 number of streams.
-		*									 Additionally, The total number of
-		*									 encoded channels (<code>streams +
-		*									 coupled_streams</code>) must be no
-		*									 more than the number of input channels.
-		* @param[in] mapping <code>const unsigned char[channels]</code>: Mapping from
-		*					 encoded channels to input channels, as described in
-		*					 @ref opus_multistream. As an extra constraint, the
-		*					 multistream encoder does not allow encoding coupled
-		*					 streams for which one channel is unused since this
-		*					 is never a good idea.
-		* @param application <tt>int</tt>: The target encoder application.
-		*								 This must be one of the following:
-		* <dl>
-		* <dt>#OPUS_APPLICATION_VOIP</dt>
-		* <dd>Process signal for improved speech intelligibility.</dd>
-		* <dt>#OPUS_APPLICATION_AUDIO</dt>
-		* <dd>Favor faithfulness to the original input.</dd>
-		* <dt>#OPUS_APPLICATION_RESTRICTED_LOWDELAY</dt>
-		* <dd>Configure the minimum possible coding delay by disabling certain modes
-		* of operation.</dd>
-		* </dl>
-		* @param[out] error <tt>int *</tt>: Returns #OPUS_OK on success, or an error
-		*									code (see @ref opus_errorcodes) on
-		*									failure.
-		*/
+	 * @param coupled_streams <tt>int</tt>: Number of coupled (2 channel) streams
+	 *									 to encode.
+	 *									 This must be no larger than the total
+	 *									 number of streams.
+	 *									 Additionally, The total number of
+	 *									 encoded channels (<code>streams +
+	 *									 coupled_streams</code>) must be no
+	 *									 more than the number of input channels.
+	 * @param[in] mapping <code>const unsigned char[channels]</code>: Mapping from
+	 *					 encoded channels to input channels, as described in
+	 *					 @ref opus_multistream. As an extra constraint, the
+	 *					 multistream encoder does not allow encoding coupled
+	 *					 streams for which one channel is unused since this
+	 *					 is never a good idea.
+	 * @param application <tt>int</tt>: The target encoder application.
+	 *								 This must be one of the following:
+	 * <dl>
+	 * <dt>#OPUS_APPLICATION_VOIP</dt>
+	 * <dd>Process signal for improved speech intelligibility.</dd>
+	 * <dt>#OPUS_APPLICATION_AUDIO</dt>
+	 * <dd>Favor faithfulness to the original input.</dd>
+	 * <dt>#OPUS_APPLICATION_RESTRICTED_LOWDELAY</dt>
+	 * <dd>Configure the minimum possible coding delay by disabling certain modes
+	 * of operation.</dd>
+	 * </dl>
+	 * @param[out] error <tt>int *</tt>: Returns #OPUS_OK on success, or an error
+	 *									code (see @ref opus_errorcodes) on
+	 *									failure.
+	 */
 	int 			err;
 
 	//////////////////////encoder///////////////////////////
@@ -355,34 +257,32 @@ void * gThreadNs(void * para)
 	//opus_decoder_ctl(decoder, OPUS_SET_BITRATE(64000));
 	fprintf(stdout, "gThreadNs:enter loop\n");
 
-	FILE *			fp = fopen("zsy.32.pcm", "wr");
-	FILE *			fpp = fopen("zsy.16.pcm", "wr");
 	while (!g_bExitFlag) {
+        int 			iErrFlag = 0;
+        
+		char			pcm3232TwoCh[FRAME_SIZE * BYTES_PER_SAMPLE_32BIT * CHANNELS];//960*4*2=7680.
+        char            pcm3232LftCh[FRAME_SIZE * BYTES_PER_SAMPLE_32BIT];//960*4=3840.
+        char            pcm3232RhtCh[FRAME_SIZE * BYTES_PER_SAMPLE_32BIT];//960*4=3840.
+        
+        //32khz32bit to 48khz48bit
+        //(320*4=1280) -> (480*2=960)
+        //3840/1280=3.
+        char            pcm4816LftCh[480*BYTES_PER_SAMPLE_16BIT*3];
+        char            pcm4816RhtCh[480*BYTES_PER_SAMPLE_16BIT*3];
+        char            pcm4816TwoCh[480*BYTES_PER_SAMPLE_16BIT*3* CHANNELS];
 
-		char			pcmBuf[MAX_FRAME_SIZE * CHANNELS * sizeof(opus_int16)];
-
-		opus_int16		in[FRAME_SIZE * CHANNELS * 2];
-		int 			iIn32kLen = 0;
-		int 			iIn48kLen = 0;
+		opus_int16		in[FRAME_SIZE * CHANNELS];
 		opus_int16		out[MAX_FRAME_SIZE * CHANNELS];
 		unsigned char	cbits[MAX_PACKET_SIZE];
 
-		//buffer for converting from 32khz to 48khz.
-		opus_int16		tmpLft48k[FRAME_SIZE * CHANNELS * 2];
-		int 			tmpLft48kLen = 0;
-		opus_int16		tmpRht48k[FRAME_SIZE * CHANNELS * 2];
-		int 			tmpRht48kLen = 0;
+		
 
-		int 			iErrFlag = 0;
-
-		//Step1:read pcm data from zsy.noise fifo.
+		//1.read 32khz,32bit,2 ch pcm from zsy.noise.
 		int 			iOffset = 0;
-		int 			iNeedBytes = sizeof(opus_int16) *CHANNELS * FRAME_SIZE;
-
-		printf("read bytes from fifo:%d\n", iNeedBytes);
+		int 			iNeedBytes = FRAME_SIZE * BYTES_PER_SAMPLE_32BIT * CHANNELS;//960*4*2=7680.
 
 		while (iNeedBytes > 0) {
-			int 			iRdBytes = read(fd_noise, pcmBuf + iOffset, iNeedBytes);
+			int 			iRdBytes = read(fd_noise, pcm3232TwoCh + iOffset, iNeedBytes);
 
 			if (iRdBytes < 0) {
 				fprintf(stderr, "failed to read opus!\n");
@@ -398,167 +298,61 @@ void * gThreadNs(void * para)
 			break;
 		}
 
-		//00fc8900 00fc8900 00c08d00 00c0d800 .........
-		//LeftChannelData is same as RightChannelData.
-		//for(int i=0;i<16;i++)
-		//{
-		//	printf("%d:    %02x\n",i,pcmBuf[i]);
-		//}
-		fwrite((void*)pcmBuf,sizeof(opus_int16) *CHANNELS * FRAME_SIZE,1,fp);
-		fflush(fp);
+        //2.split stereo to single channel.
+        int iLftChIndex=0,iRhtChIndex=0;
+        int iChFlag=0;
+        for(int i=0;i<FRAME_SIZE * BYTES_PER_SAMPLE_32BIT * CHANNELS;i+=4)
+        {
+            if(iChFlag)
+            {
+                memcpy(&pcm3232LftCh[iLftChIndex],&pcm3232TwoCh[i],4);
+                iLftChIndex+=4;
+            }else{
+                memcpy(&pcm3232RhtCh[iRhtChIndex],&pcm3232TwoCh[i],4);
+                iRhtChIndex+=4;
+            }
+            iChFlag=!iChFlag;
+        }
+        
+        //3.do 32khz/32bit to 48khz/16bit convert.
+		//3840/(320*4)=1280.
+		for(int i=0;i<3;i++)
+        {
+            zcvt_3232_to_4816(&pcm3232LftCh[i*320*4],320*4,&pcm4816LftCh[i*480*2],480*2);
+            zcvt_3232_to_4816(&pcm3232RhtCh[i*320*4],320*4,&pcm4816RhtCh[i*480*2],480*2);
+        }
+		
+		//4.combine single channel to stereo.
+		int iTwoChIndex=0;
+		for(int i=0;i<480*BYTES_PER_SAMPLE_16BIT*3;i+=2)
+        {
+            memcpy(&pcm4816TwoCh[iTwoChIndex],&pcm4816LftCh[i],2);
+            iTwoChIndex+=2;
+            memcpy(&pcm4816TwoCh[iTwoChIndex],&pcm4816RhtCh[i],2);
+            iTwoChIndex+=2;
+        }
+        
+		//5. write pcm to zsy.clean for local playback.
+		int 			iNeedWrBytes = sizeof(pcm4816TwoCh);//sizeof(short) *iDecBytes * CHANNELS;
+		int 			iWrOffset = 0;
+
+		while (iNeedWrBytes > 0) {
+			int 			iWrBytes = write(fd_clean, pcm4816TwoCh + iWrOffset, iNeedWrBytes);
+
+			if (iWrBytes < 0) {
+				fprintf(stderr, "failed to write fd_clean!\n");
+				break;
+			}
+
+			iNeedWrBytes		-= iWrBytes;
+			iWrOffset			+= iWrBytes;
+		}
 #if 0
-
-		//read from zsy.noise and write to zsy.clean without any processing (S32_LE).
-		//test okay,should be removed when publish.
-		int 			iNeedWrBytes = sizeof(opus_int16) *CHANNELS * FRAME_SIZE;
-		int 			iWrOffset = 0;
-
-		while (iNeedWrBytes > 0) {
-			int 			iWrBytes = write(fd_clean, pcmBuf + iWrOffset, iNeedWrBytes);
-
-			if (iWrBytes < 0) {
-				fprintf(stderr, "failed to write fd_clean!\n");
-				break;
-			}
-
-			iNeedWrBytes		-= iWrBytes;
-			iWrOffset			+= iWrBytes;
-		}
-
-#endif
-
-
-		//32bit to 16bit.
-		int 			iPcmBlk = sizeof(opus_int16) *CHANNELS * FRAME_SIZE;
-
-		for (int i = 0; i < iPcmBlk; i += sizeof(int)) {
-			int 			iPcm32Bit = 0;
-			opus_int16		iPcm16Bit = 0;
-
-			iPcm32Bit			|= pcmBuf[0] << 0;
-			iPcm32Bit			|= pcmBuf[1] << 8;
-			iPcm32Bit			|= pcmBuf[2] << 16;
-			iPcm32Bit			|= pcmBuf[3] << 24;
-			iPcm16Bit			= (opus_int16)(iPcm32Bit>>16-0x8000);
-
-			printf("%02x,%02x,%02x,%02x %d(%08x)->%d(%04x)\n", ///<
-			(unsigned char) pcmBuf[0], (unsigned char) pcmBuf[1], (unsigned char) pcmBuf[2],
-				 (unsigned char) pcmBuf[3], 
-				(unsigned int) iPcm32Bit, (unsigned int) iPcm32Bit, (unsigned short) iPcm16Bit,
-				 (unsigned short) iPcm16Bit);
-
-			in[iIn32kLen++] 	= iPcm16Bit;
-		}
-		fwrite((void*)in,iIn32kLen*sizeof(opus_int16),1,fpp);
-		fflush(fpp);
-		//printf("iPcmBlk:%d -> %d\n",iPcmBlk,iIn32kLen);
-		continue;
-
-		//read from zsy.noise and write to zsy.clean with convert 32bit to 16bit (S16_LE).
-		//test okay,should be removed when publish.
-		int 			iNeedWrBytes = iIn32kLen * sizeof(opus_int16);
-		int 			iWrOffset = 0;
-		char *			pPcm16bit = (char *) (in);
-
-		while (iNeedWrBytes > 0) {
-			int 			iWrBytes = write(fd_clean, pPcm16bit + iWrOffset, iNeedWrBytes);
-
-			if (iWrBytes < 0) {
-				fprintf(stderr, "failed to write fd_clean!\n");
-				break;
-			}
-
-			iNeedWrBytes		-= iWrBytes;
-			iWrOffset			+= iWrBytes;
-		}
-
-		continue;
-
-		//Step2:convert int8_t to int16_t before frequency convert.
+		//convert from little-endian ordering.
 		for (int i = 0; i < CHANNELS * FRAME_SIZE; i++) {
-			in[i]				= pcmBuf[2 * i] | pcmBuf[2 * i + 1] << 8;
+			in[i]				= pcmBuf[2 * i + 1] << 8 | pcmBuf[2 * i];
 		}
 
-#if 1
-
-		//Step3.do sample frequency convert.
-		if (g_DeMode) {
-			int16_t 		tmp25[250];
-			int16_t 		tmp50[500];
-			int16_t 		tmp96[960];
-			int16_t 		tmp48[480];
-
-			//25kHz ==> 50kHz ==> 96kHz ==> 48kHz 
-			UniversalResample(tmp25, 250, tmp50, 500, &urState2550); //25kHz ==> 50kHz.
-			UniversalResample(tmp50, 500, tmp96, 960, &urState5096); //50kHz ==> 96kHz.
-			WebRtcSpl_DownsampleBy2(tmp96, 960, tmp48, DownsampleBy2_filtState1); //96kHz ==> 48kHz
-		}
-		else {
-			//1.split stereo to 2*single channel.
-			opus_int16		tmpLft32k[FRAME_SIZE];
-			opus_int16		tmpRht32k[FRAME_SIZE];
-			int 			iTmpLft32kLen = 0;
-			int 			iTmpRht32kLen = 0;
-
-			for (int i = 0; i < FRAME_SIZE * CHANNELS; i++) {
-				if ((i + 1) % 2 == 0) {
-					tmpLft32k[iTmpLft32kLen++] = in[i];
-				}
-				else {
-					tmpRht32k[iTmpRht32kLen++] = in[i];
-				}
-			}
-
-			//2.frequency converter only support 320 as a block at once.
-			//loop to convert.
-			int 			iLoops = FRAME_SIZE / 320;
-			int 			iLftOft = 0;
-			int 			iRhtOft = 0;
-
-			for (int i = 0; i < iLoops; i++) {
-				int16_t 		tmp32[320];
-				int16_t 		tmp16[160];
-				int16_t 		tmp48[480];
-				int32_t 		tmpmem[480 * 2];
-
-				//step1:left channel convert.
-				memcpy(tmp32, &tmpLft32k[iLftOft], sizeof(int16_t) * 320);
-				iLftOft 			+= sizeof(int16_t) * 320;
-
-				//step2:32kHz-16khz-48Khz.
-				WebRtcSpl_DownsampleBy2(tmp32, 320, tmp16, DownsampleBy2_filtState1); //32kHz ==> 16kHz
-				WebRtcSpl_Resample16khzTo48khz(tmp16, tmp48, &state1648, tmpmem); //16kHz ==> 48kHz
-
-				//step3:left channel temporary storage.
-				memcpy(&tmpLft48k[tmpLft48kLen], tmp48, sizeof(int16_t) * 480);
-				tmpLft48kLen		+= sizeof(int16_t) * 480;
-
-
-				//step1:right channel convert.
-				memcpy(tmp32, &tmpRht32k[iRhtOft], sizeof(int16_t) * 320);
-				iRhtOft 			+= sizeof(int16_t) * 320;
-
-				//step2:32kHz-16khz-48Khz.
-				WebRtcSpl_DownsampleBy2(tmp32, 320, tmp16, DownsampleBy2_filtState1); //32kHz ==> 16kHz
-				WebRtcSpl_Resample16khzTo48khz(tmp16, tmp48, &state1648, tmpmem); //16kHz ==> 48kHz
-
-				//step3:right channel temporary storage.
-				memcpy(&tmpRht48k[tmpRht48kLen], tmp48, sizeof(int16_t) * 480);
-				tmpRht48kLen		+= sizeof(int16_t) * 480;
-			}
-
-			//3.combine 2*single channel to stereo interlaced.
-			iIn48kLen			= 0;
-
-			for (int i = 0; i < (tmpLft48kLen / sizeof(int16_t)); i++) {
-				in[iIn48kLen++] 	= tmpLft48k[i];
-				in[iIn48kLen++] 	= tmpRht48k[i];
-			}
-
-			printf("after 32khz-48khz,iInLen=%d(%d)\n", iIn48kLen, iIn48kLen * sizeof(int16_t));
-		}
-
-#endif
 
 		//2.noise suppression.
 		switch (gCamPara.m_iDeNoise)
@@ -586,24 +380,13 @@ void * gThreadNs(void * para)
 		}
 
 
-		//opus_enc only support Big-endian.
-		//convert from little-endian ordering.
-		for (int i = 0; i < iIn48kLen; i++) {
-			in[i]				= htonl(in[i]);
-		}
-
-
 		//3.encode pcm to opus.
-		//int			iEncBytes = opus_encode(encoder, in, FRAME_SIZE, cbits, MAX_PACKET_SIZE);
-		int 			iEncBytes = opus_encode(encoder, in, iIn48kLen, cbits, MAX_PACKET_SIZE);
+		int 			iEncBytes = opus_encode(encoder, in, FRAME_SIZE, cbits, MAX_PACKET_SIZE);
 
 		if (iEncBytes < 0) {
 			fprintf(stderr, "encode failed: %s\n", opus_strerror(iEncBytes));
 			continue;
 		}
-
-		fprintf(stdout, "opus_encoder : %d(%d)->%d\n", iIn48kLen, iIn48kLen * CHANNELS * sizeof(int16_t), iEncBytes);
-
 
 		//4.tx opus(len+data) to APP.
 		if (g_bOpusConnectedFlag) {
@@ -638,9 +421,9 @@ void * gThreadNs(void * para)
 		}
 
 		/* Decode the data. In this example, frame_size will be constant because
-			the encoder is using a constant frame size. However, that may not
-			be the case for all encoders, so the decoder must always check
-			the frame size returned. */
+		   the encoder is using a constant frame size. However, that may not
+		   be the case for all encoders, so the decoder must always check
+		   the frame size returned. */
 		int 			iDecBytes = opus_decode(decoder, cbits, iEncBytes, out, MAX_FRAME_SIZE, 0);
 
 		if (iDecBytes < 0) {
@@ -648,31 +431,11 @@ void * gThreadNs(void * para)
 			continue;
 		}
 
-		fprintf(stdout, "opus_decoder : %d->%d(%d)\n", iEncBytes, iDecBytes, iDecBytes * CHANNELS * sizeof(int16_t));
-
 
 		/* Convert to little-endian ordering. */
 		for (int i = 0; i < CHANNELS * iDecBytes; i++) {
 			pcmBuf[2 * i]		= out[i] &0xFF;
 			pcmBuf[2 * i + 1]	= (out[i] >> 8) & 0xFF;
-		}
-
-#if 0
-
-		//write pcm to zsy.clean for local playback.
-		int 			iNeedWrBytes = sizeof(opus_int16) *iDecBytes * CHANNELS;
-		int 			iWrOffset = 0;
-
-		while (iNeedWrBytes > 0) {
-			int 			iWrBytes = write(fd_clean, pcmBuf + iWrOffset, iNeedWrBytes);
-
-			if (iWrBytes < 0) {
-				fprintf(stderr, "failed to write fd_clean!\n");
-				break;
-			}
-
-			iNeedWrBytes		-= iWrBytes;
-			iWrOffset			+= iWrBytes;
 		}
 
 #endif
@@ -810,7 +573,7 @@ void * gThreadJson(void * para)
 		//3.parse out json.
 		fprintf(stdout, "%s\n\n", cJsonRx);
 		(void)
-		gParseJson(cJsonRx, len, fd_json_tx);
+			gParseJson(cJsonRx, len, fd_json_tx);
 
 		//reduce heavy cpu load.
 		usleep(1000 * 100);
@@ -829,7 +592,7 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 	//Ns:Noise Suppression Progress.
 	(void)
-	jsonLen;
+		jsonLen;
 	cJSON * 		rootRx = cJSON_Parse(jsonData);
 
 	if (rootRx == NULL) {
@@ -1039,7 +802,7 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 			//sprintf(command, "amixer -c tegrasndt186ref cset name=\"MVC1 Vol\" %d", iValue * 534);
 			//system(command);
 			//
-			system("spidev_test -D /dev/spidev3.0 -H -p \"\x80\x00\x00\x00\x00\x00\x00\x64\"");
+			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x80\\x00\\x00\\x00\\x00\\x00\\x00\\x64\"");
 		}
 
 		//write feedback to tx fifo.
@@ -1067,10 +830,10 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 			//only query,no need to write.
 		}
 		else if (!strcmp(cValue, "Normal")) {
-			system("spidev_test -D /dev/spidev3.0 -H -p \"\x80\x00\x01\x00\x00\x00\x00\x00\"");
+			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\"");
 		}
 		else if (!strcmp(cValue, "Wobble")) {
-			system("spidev_test -D /dev/spidev3.0 -H -p \"\x80\x00\x01\x00\x00\x00\x00\x01\"");
+			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x01\"");
 		}
 	}
 
