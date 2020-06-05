@@ -51,11 +51,16 @@ typedef struct {
 	char			m_cam2xy[32];
 	char			m_cam3xy[32];
 
-	//"DeNoise":"off/Strong/WebRTC/mmse/Bevis/NRAE/query"
+	//"DeNoise":"off/Strong/WebRTC/query"
 	int 			m_iDeNoise;
 
 	//"StrongMode":"mode1/mode2/mode3/mode4/mode5/mode6/mode7/mode8/mode9/mode10/query"
 	int 			m_iStrongMode;
+	int 			m_iStrongModeShadow;
+
+	//"WebRtcGrade":"0/1/2"
+	int			m_iWebRtcGrade;
+	int			m_iWebRtcGradeShadow;
 } ZCamPara;
 
 
@@ -150,7 +155,14 @@ int main(int argc, char * *argv)
 	fprintf(stdout, "zns exit.\n");
 	return 0;
 }
+void gNoiseCutByRNNoise(char *pcm,int len)
+{
 
+}
+void gNoiseCutByWebRtc(char *pcm,int len)
+{
+
+}
 void * gThreadNs(void * para)
 {
 	//for mkfifo in&out.
@@ -176,6 +188,11 @@ void * gThreadNs(void * para)
 
 	//for libns.
 	//here call ns_init() or ns_custom_init() for call ns_uninit() later.
+	gCamPara.m_iDeNoise=0;
+	gCamPara.m_iStrongMode=0;
+	gCamPara.m_iStrongModeShadow=0;
+	gCamPara.m_iWebRtcGrade=0;
+	gCamParam.m_iWebRtcGradeShadow=0;
 	ns_init(0); 									//0~5.
 #if 0
 	int 			denoiseAlgorithm = 3;
@@ -327,7 +344,43 @@ void * gThreadNs(void * para)
 		zcvt_3232_to_4816(pcm3232LftCh,320*4,pcm4816LftCh,480*2);
 		zcvt_3232_to_4816(pcm3232RhtCh,320*4,pcm4816RhtCh,480*2);
 
-		//4.combine single channel to stereo.
+		//4.noise suppression apply on each channel.
+		switch (gCamPara.m_iDeNoise)
+		{
+			case 0: //DeNoise Disabled.(off)
+				break;
+
+			case 1: //RNNoise.(Strong)
+				//libns.so only process 960 bytes each time.
+				//ns_processing(cBufOpusDec, len);
+				if(gCamPara.m_iStrongMode!=gCamPara.m_iStrongModeShadow)
+				{
+					ns_uninit();
+					ns_init(gCamPara.m_iStrongMode);
+					gCamPara.m_iStrongMode=gCamPara.m_iStrongModeShadow;
+				}
+
+				gNoiseCutByRNNoise(pcm4816LftCh,480*BYTES_16BITS);
+				gNoiseCutByRNNoise(pcm4816RhtCh,480*BYTES_16BITS);
+				break;
+
+			case 2: //WebRTC.(WebRtc)
+				//libns.so only process 960 bytes each time.
+				//ns_processing(cBufOpusDec, len);
+				if(gCamPara.m_iWebRtcGrade!=gCamParam.m_iWebRtcGradeShadow)
+				{
+
+					gCamPara.m_iWebRtcGrade!=gCamParam.m_iWebRtcGradeShadow;
+				}
+				gNoiseCutByWebRtc(pcm4816LftCh,480*BYTES_16BITS);
+				gNoiseCutByWebRtc(pcm4816RhtCh,480*BYTES_16BITS);
+				break;
+
+			default:
+				break;
+		}
+
+		//5.combine two channels to stereo.
 		int iTwoChIndex=0;
 		for(int i=0;i<480*BYTES_16BITS;i+=2)
 		{
@@ -337,8 +390,9 @@ void * gThreadNs(void * para)
 			iTwoChIndex+=2;
 		}
 
+
 #if 0
-		//5. write pcm to zsy.clean for local playback.
+		//6. write pcm to zsy.clean for local playback.
 		int 			iNeedWrBytes = sizeof(pcm4816TwoCh);//sizeof(short) *iDecBytes * CHANNELS;
 		int 			iWrOffset = 0;
 
@@ -354,40 +408,12 @@ void * gThreadNs(void * para)
 			iWrOffset		+= iWrBytes;
 		}
 #endif
-		//6. convert from little-endian ordering to big-endian for encoding.
+		//7. convert from little-endian ordering to big-endian for encoding.
 		for (int i = 0; i < (480*CHANNELS); i++) {
 			in4816_2Ch[i]				= pcm4816TwoCh[2 * i + 1] << 8 | pcm4816TwoCh[2 * i];
 		}
 
-#if 0
-
-		//2.noise suppression.
-		switch (gCamPara.m_iDeNoise)
-		{
-			case 0: //DeNoise Disabled.
-				break;
-
-			case 1: //RNNoise.
-				//libns.so only process 960 bytes each time.
-				//ns_processing(cBufOpusDec, len);
-				break;
-
-			case 2: //WebRTC.
-				//libns.so only process 960 bytes each time.
-				//ns_processing(cBufOpusDec, len);
-				break;
-
-			case 3: //NRAE.
-				//libns.so only process 960 bytes each time.
-				//ns_processing(cBufOpusDec, len);
-				break;
-
-			default:
-				break;
-		}
-
-#endif
-		//3.encode pcm to opus.
+		//8.encode pcm to opus.
 		//To encode a frame, opus_encode() or opus_encode_float() must be called with exactly one frame (2.5, 5, 10, 20, 40 or 60 ms) of audio data.
 		//48khz,16bit,2ch
 		//so 1s data size=48khz*16bit*2ch=192000 bytes= 192000/2=96000 short.
@@ -401,7 +427,7 @@ void * gThreadNs(void * para)
 		}
 		//fprintf(stdout,"encode okay:%d bytes\n",iEncBytes);
 
-		//4.tx opus(len+data) to APP.
+		//9.tx opus(len+data) to APP.
 		if (g_bOpusConnectedFlag) {
 			int 			iEncBytesBE = iEncBytes /*htonl(iEncBytes)*/;
 			int 			len = write(g_iOpusFd, &iEncBytesBE, sizeof(iEncBytesBE));
@@ -433,6 +459,7 @@ void * gThreadNs(void * para)
 			}
 		}
 
+		//10.decode.
 		/* Decode the data. In this example, frame_size will be constant because
 		   the encoder is using a constant frame size. However, that may not
 		   be the case for all encoders, so the decoder must always check
@@ -450,7 +477,7 @@ void * gThreadNs(void * para)
 			pcm4816TwoCh[2 * i]		= out[i] &0xFF;
 			pcm4816TwoCh[2 * i + 1]	= (out[i] >> 8) & 0xFF;
 		}
-		//5. write pcm to zsy.clean for local playback.
+		//11. write pcm to zsy.clean for local playback.
 		int                     iNeedWrBytes = sizeof(pcm4816TwoCh);
 		int                     iWrOffset = 0;
 
@@ -743,9 +770,6 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 		else if (!strcmp(cValue, "\"WebRTC\"")) {
 			gCamPara.m_iDeNoise = 2;
 		}
-		else if (!strcmp(cValue, "\"NRAE\"")) {
-			gCamPara.m_iDeNoise = 3;
-		}
 
 		//write feedback to tx fifo.
 		cJSON * 		rootTx = cJSON_CreateObject();
@@ -812,6 +836,39 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 		write(fd, pJson, iJsonLen);
 		cJSON_Delete(root);
 	}
+
+	//"WebRtcGrade":"0/1/2/query"
+	cJSON * 		jWebRtcGrade = cJSON_GetObjectItem(rootRx, "WebRtcGrade");
+
+	if (jWebRtcGrade) {
+		char *			cValue = cJSON_Print(jWebRtcGrade);
+
+		if (!strcmp(cValue, "\"query\"")) {
+			//only query,no need to write.
+		}
+		else if (!strcmp(cValue, "\"0\"")) {
+			gCamPara.m_iWebRtcGrade = 0;
+		}
+		else if (!strcmp(cValue, "\"1\"")) {
+			gCamPara.m_iWebRtcGrade = 1;
+		}
+		else if (!strcmp(cValue, "\"2\"")) {
+			gCamPara.m_iWebRtcGrade = 2;
+		}
+
+		//4.write feedback to tx fifo.
+		cJSON * 		root = cJSON_CreateObject();
+		cJSON * 		item = cJSON_CreateString(cValue);
+
+		cJSON_AddItemToObject(root, "WebRtcGrade", item);
+		char *			pJson = cJSON_Print(root);
+		int 			iJsonLen = strlen(pJson);
+
+		write(fd, &iJsonLen, sizeof(iJsonLen));
+		write(fd, pJson, iJsonLen);
+		cJSON_Delete(root);
+	}
+
 
 	//SpkPlaybackVol
 	cJSON * 		jSpkPlaybackVol = cJSON_GetObjectItem(rootRx, "SpkPlaybackVol");
