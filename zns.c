@@ -399,7 +399,7 @@ void * gThreadNs(void * para)
 			fprintf(stderr, "encode failed: %s\n", opus_strerror(iEncBytes));
 			continue;
 		}
-		fprintf(stdout,"encode okay:%d bytes\n",iEncBytes);
+		//fprintf(stdout,"encode okay:%d bytes\n",iEncBytes);
 
 		//4.tx opus(len+data) to APP.
 		if (g_bOpusConnectedFlag) {
@@ -443,7 +443,7 @@ void * gThreadNs(void * para)
 			fprintf(stderr, "decoder failed: %s\n", opus_strerror(iDecBlks));
 			continue;
 		}
-		fprintf(stdout,"decoder okay:%d blocks\n",iDecBlks);
+		//fprintf(stdout,"decoder okay:%d blocks\n",iDecBlks);
 
 		/* Convert from big-endian to little-endian ordering */
 		for (int i = 0; i < CHANNELS * iDecBlks; i++) {
@@ -616,7 +616,7 @@ void * gThreadJson(void * para)
 
 int gParseJson(char * jsonData, int jsonLen, int fd)
 {
-	int 			bWrCfgFile = 1;
+	int 			bWrCfgFile = 0;
 
 	//Ns:Noise Suppression Progress.
 	(void)
@@ -632,14 +632,15 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 	if (jCam1CenterXY) {
 		char *			cValue = cJSON_Print(jCam1CenterXY);
-
-		if (!strcmp(cValue, "query")) {
+		printf("cam1centerxy:%d,%s\n",strlen(cValue),cValue);
+		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
-			bWrCfgFile			= 0;
 		}
 		else {
-			if (strlen(cValue) < sizeof(gCamPara.m_cam1xy)) {
-				strcpy(gCamPara.m_cam1xy, cValue);
+			//x,y
+			if ( strlen(cValue)>=3 && (strlen(cValue) < sizeof(gCamPara.m_cam1xy)) ) {
+				strncpy(gCamPara.m_cam1xy, &cValue[1],strlen(cValue)-2);
+				bWrCfgFile			= 1;
 			}
 			else {
 				printf("too long Cam1CenterXY!\n");
@@ -663,14 +664,16 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 	if (jCam2CenterXY) {
 		char *			cValue = cJSON_Print(jCam2CenterXY);
+		printf("cam2centerxy:%d,%s\n",strlen(cValue),cValue);
 
-		if (!strcmp(cValue, "query")) {
+		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
-			bWrCfgFile			= 0;
 		}
 		else {
-			if (strlen(cValue) < sizeof(gCamPara.m_cam2xy)) {
-				strcpy(gCamPara.m_cam2xy, cValue);
+			//x,y
+			if ( strlen(cValue)>=3 && (strlen(cValue) < sizeof(gCamPara.m_cam2xy)) ) {
+				strncpy(gCamPara.m_cam2xy,&cValue[1],strlen(cValue)-2);
+				bWrCfgFile			= 1;
 			}
 			else {
 				printf("too long Cam2CenterXY!\n");
@@ -694,16 +697,17 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 	if (jCam3CenterXY) {
 		char *			cValue = cJSON_Print(jCam3CenterXY);
+		printf("cam3centerxy:%d,%s\n",strlen(cValue),cValue);
 
-		if (!strcmp(cValue, "query")) {
+		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
-			bWrCfgFile			= 0;
 		}
 		else {
-			if (strlen(cValue) < sizeof(gCamPara.m_cam3xy)) {
-				strcpy(gCamPara.m_cam3xy, cValue);
-			}
-			else {
+			//x,y
+			if (strlen(cValue)>=3 && (strlen(cValue) < sizeof(gCamPara.m_cam3xy)) ) {
+				strncpy(gCamPara.m_cam3xy, &cValue[1],strlen(cValue)-2);
+				bWrCfgFile			= 1;
+			}else {
 				printf("too long Cam3CenterXY!\n");
 			}
 		}
@@ -727,20 +731,19 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 	if (jDeNoise) {
 		char *			cValue = cJSON_Print(jDeNoise);
 
-		if (!strcmp(cValue, "query")) {
+		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
-			bWrCfgFile			= 0;
 		}
-		else if (!strcmp(cValue, "off")) {
+		else if (!strcmp(cValue, "\"off\"")) {
 			gCamPara.m_iDeNoise = 0;
 		}
-		else if (!strcmp(cValue, "Strong")) {
+		else if (!strcmp(cValue, "\"Strong\"")) {
 			gCamPara.m_iDeNoise = 1;
 		}
-		else if (!strcmp(cValue, "WebRTC")) {
+		else if (!strcmp(cValue, "\"WebRTC\"")) {
 			gCamPara.m_iDeNoise = 2;
 		}
-		else if (!strcmp(cValue, "NRAE")) {
+		else if (!strcmp(cValue, "\"NRAE\"")) {
 			gCamPara.m_iDeNoise = 3;
 		}
 
@@ -763,38 +766,37 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 	if (jStrongMode) {
 		char *			cValue = cJSON_Print(jStrongMode);
 
-		if (!strcmp(cValue, "query")) {
+		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
-			bWrCfgFile			= 0;
 		}
-		else if (!strcmp(cValue, "mode1")) {
+		else if (!strcmp(cValue, "\"mode1\"")) {
 			gCamPara.m_iStrongMode = 1;
 		}
-		else if (!strcmp(cValue, "mode2")) {
+		else if (!strcmp(cValue, "\"mode2\"")) {
 			gCamPara.m_iStrongMode = 2;
 		}
-		else if (!strcmp(cValue, "mode3")) {
+		else if (!strcmp(cValue, "\"mode3\"")) {
 			gCamPara.m_iStrongMode = 3;
 		}
-		else if (!strcmp(cValue, "mode4")) {
+		else if (!strcmp(cValue, "\"mode4\"")) {
 			gCamPara.m_iStrongMode = 4;
 		}
-		else if (!strcmp(cValue, "mode5")) {
+		else if (!strcmp(cValue, "\"mode5\"")) {
 			gCamPara.m_iStrongMode = 5;
 		}
-		else if (!strcmp(cValue, "mode6")) {
+		else if (!strcmp(cValue, "\"mode6\"")) {
 			gCamPara.m_iStrongMode = 6;
 		}
-		else if (!strcmp(cValue, "mode7")) {
+		else if (!strcmp(cValue, "\"mode7\"")) {
 			gCamPara.m_iStrongMode = 7;
 		}
-		else if (!strcmp(cValue, "mode8")) {
+		else if (!strcmp(cValue, "\"mode8\"")) {
 			gCamPara.m_iStrongMode = 8;
 		}
-		else if (!strcmp(cValue, "mode9")) {
+		else if (!strcmp(cValue, "\"mode9\"")) {
 			gCamPara.m_iStrongMode = 9;
 		}
-		else if (!strcmp(cValue, "mode10")) {
+		else if (!strcmp(cValue, "\"mode10\"")) {
 			gCamPara.m_iStrongMode = 10;
 		}
 
@@ -854,13 +856,13 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 		printf("DeMode:%s\n", cValue);
 
-		if (!strcmp(cValue, "query")) {
+		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
 		}
-		else if (!strcmp(cValue, "Normal")) {
+		else if (!strcmp(cValue, "\"Normal\"")) {
 			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\"");
 		}
-		else if (!strcmp(cValue, "Wobble")) {
+		else if (!strcmp(cValue, "\"Wobble\"")) {
 			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x01\"");
 		}
 	}
@@ -887,6 +889,7 @@ int gLoadCfgFile(ZCamPara * para)
 		strcpy(para->m_cam3xy, "0,0");
 		para->m_iDeNoise	= 0;
 		para->m_iStrongMode = 1;
+		fprintf(stdout,"load default cfg file!\n");
 		return - 1;
 	}
 
@@ -988,6 +991,8 @@ int gSaveCfgFile(ZCamPara * para)
 	write(fd, pJson, strlen(pJson));
 	close(fd);
 	cJSON_Delete(root);
+
+	printf("write cfg file:%s\n",para->m_cam1xy);
 	return 0;
 }
 
