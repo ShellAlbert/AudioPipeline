@@ -44,8 +44,8 @@
 
 //i2s in.
 //32khz,32bit
-#define BYTES_PER_SAMPLE_32BIT    4 //32bit=4bytes.
-#define BYTES_PER_SAMPLE_16BIT  2//16bit=2bytes.
+#define BYTES_32BITS    4 //32bit=4bytes.
+#define BYTES_16BITS  2//16bit=2bytes.
 typedef struct {
 	char			m_cam1xy[32];
 	char			m_cam2xy[32];
@@ -173,7 +173,7 @@ void * gThreadNs(void * para)
 	}
 	//sample rate convret.
 	zcvt_init();
-	
+
 	//for libns.
 	//here call ns_init() or ns_custom_init() for call ns_uninit() later.
 	ns_init(0); 									//0~5.
@@ -258,28 +258,36 @@ void * gThreadNs(void * para)
 	fprintf(stdout, "gThreadNs:enter loop\n");
 
 	while (!g_bExitFlag) {
-        int 			iErrFlag = 0;
-        
-		char			pcm3232TwoCh[FRAME_SIZE * BYTES_PER_SAMPLE_32BIT * CHANNELS];//960*4*2=7680.
-        char            pcm3232LftCh[FRAME_SIZE * BYTES_PER_SAMPLE_32BIT];//960*4=3840.
-        char            pcm3232RhtCh[FRAME_SIZE * BYTES_PER_SAMPLE_32BIT];//960*4=3840.
-        
-        //32khz32bit to 48khz48bit
-        //(320*4=1280) -> (480*2=960)
-        //3840/1280=3.
-        char            pcm4816LftCh[480*BYTES_PER_SAMPLE_16BIT*3];
-        char            pcm4816RhtCh[480*BYTES_PER_SAMPLE_16BIT*3];
-        char            pcm4816TwoCh[480*BYTES_PER_SAMPLE_16BIT*3* CHANNELS];
+		int 		iErrFlag = 0;
 
-		opus_int16		in[FRAME_SIZE * CHANNELS];
+		char		pcm3232TwoCh[1280*2];
+		char            pcm3232LftCh[1280];
+		char            pcm3232RhtCh[1280];
+
+
+		//opus_encoder() has special requirement,so we choose 10ms as the encode data block.
+		//48khz,16bit,2ch:so 1s data size=48khz*16bit*2ch=192000 bytes= 192000/2=96000 short.
+		//10ms = 1s(1000ms)/100.
+		//so 10ms data size=96000 short/100=960 short(stereo), 960 short/2 ch=480 short(1ch).
+
+		//we need (480 short * 16 bits * 2 ch) bytes to fill pcm4816TwoCh full.
+		//thus sample rate converter need different data size.
+		//from 32khz32bit to 48khz16bit: (320*4=1280) -> (480*2=960)
+		//so, to get 960 bytes 48khz16bit data, we need 1280 bytes 32khz32bit data.
+		char            pcm4816LftCh[480*BYTES_16BITS];
+		char            pcm4816RhtCh[480*BYTES_16BITS];
+		char            pcm4816TwoCh[480*CHANNELS*BYTES_16BITS];
+
+		//opus enc/dec.
+		opus_int16		in4816_2Ch[480*CHANNELS];
 		opus_int16		out[MAX_FRAME_SIZE * CHANNELS];
 		unsigned char	cbits[MAX_PACKET_SIZE];
 
-		
+
 
 		//1.read 32khz,32bit,2 ch pcm from zsy.noise.
 		int 			iOffset = 0;
-		int 			iNeedBytes = FRAME_SIZE * BYTES_PER_SAMPLE_32BIT * CHANNELS;//960*4*2=7680.
+		int 			iNeedBytes = 1280*2; 
 
 		while (iNeedBytes > 0) {
 			int 			iRdBytes = read(fd_noise, pcm3232TwoCh + iOffset, iNeedBytes);
@@ -298,40 +306,37 @@ void * gThreadNs(void * para)
 			break;
 		}
 
-        //2.split stereo to single channel.
-        int iLftChIndex=0,iRhtChIndex=0;
-        int iChFlag=0;
-        for(int i=0;i<FRAME_SIZE * BYTES_PER_SAMPLE_32BIT * CHANNELS;i+=4)
-        {
-            if(iChFlag)
-            {
-                memcpy(&pcm3232LftCh[iLftChIndex],&pcm3232TwoCh[i],4);
-                iLftChIndex+=4;
-            }else{
-                memcpy(&pcm3232RhtCh[iRhtChIndex],&pcm3232TwoCh[i],4);
-                iRhtChIndex+=4;
-            }
-            iChFlag=!iChFlag;
-        }
-        
-        //3.do 32khz/32bit to 48khz/16bit convert.
-		//3840/(320*4)=1280.
-		for(int i=0;i<3;i++)
-        {
-            zcvt_3232_to_4816(&pcm3232LftCh[i*320*4],320*4,&pcm4816LftCh[i*480*2],480*2);
-            zcvt_3232_to_4816(&pcm3232RhtCh[i*320*4],320*4,&pcm4816RhtCh[i*480*2],480*2);
-        }
-		
+		//2.split stereo to single channel.
+		int iLftChIndex=0,iRhtChIndex=0;
+		int iChFlag=0;
+		for(int i=0;i<(1280*2);i+=4)
+		{
+			if(iChFlag)
+			{
+				memcpy(&pcm3232LftCh[iLftChIndex],&pcm3232TwoCh[i],4);
+				iLftChIndex+=4;
+			}else{
+				memcpy(&pcm3232RhtCh[iRhtChIndex],&pcm3232TwoCh[i],4);
+				iRhtChIndex+=4;
+			}
+			iChFlag=!iChFlag;
+		}
+
+		//3.do 32khz/32bit to 48khz/16bit convert.
+		//input each size is 320*4=1280, output each size is 480*2=960.
+		zcvt_3232_to_4816(pcm3232LftCh,320*4,pcm4816LftCh,480*2);
+		zcvt_3232_to_4816(pcm3232RhtCh,320*4,pcm4816RhtCh,480*2);
+
 		//4.combine single channel to stereo.
 		int iTwoChIndex=0;
-		for(int i=0;i<480*BYTES_PER_SAMPLE_16BIT*3;i+=2)
-        {
-            memcpy(&pcm4816TwoCh[iTwoChIndex],&pcm4816LftCh[i],2);
-            iTwoChIndex+=2;
-            memcpy(&pcm4816TwoCh[iTwoChIndex],&pcm4816RhtCh[i],2);
-            iTwoChIndex+=2;
-        }
-        
+		for(int i=0;i<480*BYTES_16BITS;i+=2)
+		{
+			memcpy(&pcm4816TwoCh[iTwoChIndex],&pcm4816LftCh[i],2);
+			iTwoChIndex+=2;
+			memcpy(&pcm4816TwoCh[iTwoChIndex],&pcm4816RhtCh[i],2);
+			iTwoChIndex+=2;
+		}
+
 		//5. write pcm to zsy.clean for local playback.
 		int 			iNeedWrBytes = sizeof(pcm4816TwoCh);//sizeof(short) *iDecBytes * CHANNELS;
 		int 			iWrOffset = 0;
@@ -345,14 +350,14 @@ void * gThreadNs(void * para)
 			}
 
 			iNeedWrBytes		-= iWrBytes;
-			iWrOffset			+= iWrBytes;
-		}
-#if 0
-		//convert from little-endian ordering.
-		for (int i = 0; i < CHANNELS * FRAME_SIZE; i++) {
-			in[i]				= pcmBuf[2 * i + 1] << 8 | pcmBuf[2 * i];
+			iWrOffset		+= iWrBytes;
 		}
 
+		//6. convert from little-endian ordering to big-endian for encoding.
+		for (int i = 0; i < (480*CHANNELS); i++) {
+			in4816_2Ch[i]				= pcm4816TwoCh[2 * i + 1] << 8 | pcm4816TwoCh[2 * i];
+		}
+#if 0
 
 		//2.noise suppression.
 		switch (gCamPara.m_iDeNoise)
@@ -379,14 +384,20 @@ void * gThreadNs(void * para)
 				break;
 		}
 
-
+#endif
 		//3.encode pcm to opus.
-		int 			iEncBytes = opus_encode(encoder, in, FRAME_SIZE, cbits, MAX_PACKET_SIZE);
+		//To encode a frame, opus_encode() or opus_encode_float() must be called with exactly one frame (2.5, 5, 10, 20, 40 or 60 ms) of audio data.
+		//48khz,16bit,2ch
+		//so 1s data size=48khz*16bit*2ch=192000 bytes= 192000/2=96000 short.
+		//10ms = 1s(1000ms)/100.
+		//so 10ms data size=96000 short/100=960 short(stereo), 960 short/2 ch=480 short(1ch).
+		int 			iEncBytes = opus_encode(encoder, in4816_2Ch, 480, cbits, MAX_PACKET_SIZE);
 
 		if (iEncBytes < 0) {
 			fprintf(stderr, "encode failed: %s\n", opus_strerror(iEncBytes));
 			continue;
 		}
+		fprintf(stdout,"encode okay:%d bytes\n",iEncBytes);
 
 		//4.tx opus(len+data) to APP.
 		if (g_bOpusConnectedFlag) {
@@ -430,15 +441,15 @@ void * gThreadNs(void * para)
 			fprintf(stderr, "decoder failed: %s\n", opus_strerror(iDecBytes));
 			continue;
 		}
-
-
-		/* Convert to little-endian ordering. */
+		fprintf(stdout,"decoder okay:%d bytes\n",iDecBytes);
+#if 0
+		/* Convert from big-endian to little-endian ordering */
 		for (int i = 0; i < CHANNELS * iDecBytes; i++) {
-			pcmBuf[2 * i]		= out[i] &0xFF;
-			pcmBuf[2 * i + 1]	= (out[i] >> 8) & 0xFF;
+			pcm4816TwoCh[2 * i]		= out[i] &0xFF;
+			pcm4816TwoCh[2 * i + 1]	= (out[i] >> 8) & 0xFF;
 		}
-
 #endif
+
 	}
 
 	close(fd_noise);
