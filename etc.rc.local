@@ -1,0 +1,10 @@
+#!/bin/bash
+
+
+# i2s digital audio sample.
+#cd /home/yntp16/wuhan2020/AudioPipeline
+#./digiaudio.sh &
+
+#usb analog audio sample.
+#cd /home/zhangshaoyan/p16
+#./monitor.sh &
