@@ -411,7 +411,7 @@ void * gThreadNs(void * para)
 				g_bOpusConnectedFlag = 0;
 			}
 			else {
-				fprintf(stdout, "opus len:%d\n", iEncBytes);
+				//fprintf(stdout, "opus len:%d\n", iEncBytes);
 				int 			iNeedTxBytes = iEncBytes;
 				int 			iTxOffset = 0;
 
@@ -424,7 +424,7 @@ void * gThreadNs(void * para)
 						break;
 					}
 
-					fprintf(stdout, "tx %d bytes opus\n", iTxBytes);
+					//fprintf(stdout, "tx %d bytes opus\n", iTxBytes);
 
 					iNeedTxBytes		-= iTxBytes;
 					iTxOffset			+= iTxBytes;
@@ -824,15 +824,20 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 		//numid=682,iface=MIXER,name='MVC1 Vol'
 		//	; type=INTEGER,access=rw------,values=1,min=0,max=16000,step=0
 		//	: values=13000
-		int 			iValue = atoi(cValue);
+		char  vol[32];
+		memset(vol,0,sizeof(vol));
+		memcpy(vol,&cValue[1],strlen(cValue)-2);
+		int iValue = atoi(vol);
+		//printf("%s,%d\n",vol,iValue);
 
-		if (iValue >= 0 && iValue <= 30) {
+		if (iValue >= 32 && iValue <= 1000) {
+			char cVolHigh=(char)((iValue>>8)&0xFF);
+			char cVolLow=(char)(iValue&0xFF);
 			char			command[512];
 
-			//sprintf(command, "amixer -c tegrasndt186ref cset name=\"MVC1 Vol\" %d", iValue * 534);
-			//system(command);
-			//
-			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x80\\x00\\x00\\x00\\x00\\x00\\x00\\x64\"");
+			sprintf(command,"spidev_test -D /dev/spidev3.0 -H -p \"\\x00\\x00\\x00\\x00\\x00\\x00\\x%02x\\x%02x\"",cVolHigh,cVolLow);
+			//printf(command);
+			system(command);
 		}
 
 		//write feedback to tx fifo.
