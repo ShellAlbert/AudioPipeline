@@ -192,7 +192,7 @@ void * gThreadNs(void * para)
 	gCamPara.m_iStrongMode=0;
 	gCamPara.m_iStrongModeShadow=0;
 	gCamPara.m_iWebRtcGrade=0;
-	gCamParam.m_iWebRtcGradeShadow=0;
+	gCamPara.m_iWebRtcGradeShadow=0;
 	ns_init(0); 									//0~5.
 #if 0
 	int 			denoiseAlgorithm = 3;
@@ -357,7 +357,7 @@ void * gThreadNs(void * para)
 				{
 					ns_uninit();
 					ns_init(gCamPara.m_iStrongMode);
-					gCamPara.m_iStrongMode=gCamPara.m_iStrongModeShadow;
+					gCamPara.m_iStrongModeShadow=gCamPara.m_iStrongMode;
 				}
 
 				gNoiseCutByRNNoise(pcm4816LftCh,480*BYTES_16BITS);
@@ -367,10 +367,12 @@ void * gThreadNs(void * para)
 			case 2: //WebRTC.(WebRtc)
 				//libns.so only process 960 bytes each time.
 				//ns_processing(cBufOpusDec, len);
-				if(gCamPara.m_iWebRtcGrade!=gCamParam.m_iWebRtcGradeShadow)
+				if(gCamPara.m_iWebRtcGrade!=gCamPara.m_iWebRtcGradeShadow)
 				{
-
-					gCamPara.m_iWebRtcGrade!=gCamParam.m_iWebRtcGradeShadow;
+                			ns_uninit();
+                			char customBandGains[8]={0};
+                			ns_custom_init(6,gCamPara.m_iWebRtcGrade,0,0,customBandGains,0);
+					gCamPara.m_iWebRtcGradeShadow=gCamPara.m_iWebRtcGrade;
 				}
 				gNoiseCutByWebRtc(pcm4816LftCh,480*BYTES_16BITS);
 				gNoiseCutByWebRtc(pcm4816RhtCh,480*BYTES_16BITS);
