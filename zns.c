@@ -337,6 +337,7 @@ void * gThreadNs(void * para)
 			iTwoChIndex+=2;
 		}
 
+#if 0
 		//5. write pcm to zsy.clean for local playback.
 		int 			iNeedWrBytes = sizeof(pcm4816TwoCh);//sizeof(short) *iDecBytes * CHANNELS;
 		int 			iWrOffset = 0;
@@ -352,11 +353,12 @@ void * gThreadNs(void * para)
 			iNeedWrBytes		-= iWrBytes;
 			iWrOffset		+= iWrBytes;
 		}
-
+#endif
 		//6. convert from little-endian ordering to big-endian for encoding.
 		for (int i = 0; i < (480*CHANNELS); i++) {
 			in4816_2Ch[i]				= pcm4816TwoCh[2 * i + 1] << 8 | pcm4816TwoCh[2 * i];
 		}
+
 #if 0
 
 		//2.noise suppression.
@@ -435,20 +437,35 @@ void * gThreadNs(void * para)
 		   the encoder is using a constant frame size. However, that may not
 		   be the case for all encoders, so the decoder must always check
 		   the frame size returned. */
-		int 			iDecBytes = opus_decode(decoder, cbits, iEncBytes, out, MAX_FRAME_SIZE, 0);
+		int 			iDecBlks = opus_decode(decoder, cbits, iEncBytes, out, MAX_FRAME_SIZE, 0);
 
-		if (iDecBytes < 0) {
-			fprintf(stderr, "decoder failed: %s\n", opus_strerror(iDecBytes));
+		if (iDecBlks < 0) {
+			fprintf(stderr, "decoder failed: %s\n", opus_strerror(iDecBlks));
 			continue;
 		}
-		fprintf(stdout,"decoder okay:%d bytes\n",iDecBytes);
-#if 0
+		fprintf(stdout,"decoder okay:%d blocks\n",iDecBlks);
+
 		/* Convert from big-endian to little-endian ordering */
-		for (int i = 0; i < CHANNELS * iDecBytes; i++) {
+		for (int i = 0; i < CHANNELS * iDecBlks; i++) {
 			pcm4816TwoCh[2 * i]		= out[i] &0xFF;
 			pcm4816TwoCh[2 * i + 1]	= (out[i] >> 8) & 0xFF;
 		}
-#endif
+		//5. write pcm to zsy.clean for local playback.
+		int                     iNeedWrBytes = sizeof(pcm4816TwoCh);
+		int                     iWrOffset = 0;
+
+		while (iNeedWrBytes > 0) {
+			int                     iWrBytes = write(fd_clean, pcm4816TwoCh + iWrOffset, iNeedWrBytes);
+
+			if (iWrBytes < 0) {
+				fprintf(stderr, "failed to write fd_clean!\n");
+				break;
+			}
+
+			iNeedWrBytes            -= iWrBytes;
+			iWrOffset               += iWrBytes;
+		}
+
 
 	}
 
