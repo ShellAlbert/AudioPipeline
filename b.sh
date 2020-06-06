@@ -62,12 +62,12 @@ fi
 TMP_DIR=/tmp/zsy
 mkdir $TMP_DIR
 
-#i2s1 -> zsy.noise -> zns -> zsy.clean -> i2s0.
-#                         -> zsy.opus  -> APP.
+#i2s1 -> zsy.noise  -> zns -> zsy.clean  -> i2s0.
+#cap  -> zsy.noise2        -> zsy.clean2 -> zsy.opus  -> APP.
 mkfifo $TMP_DIR/zsy.noise
 mkfifo $TMP_DIR/zsy.noise2
 mkfifo $TMP_DIR/zsy.clean
-mkfifo $TMP_DIR/zsy.opus
+mkfifo $TMP_DIR/zsy.clean2
 
 #zns -> zsy.json.tx -> nc -> APP.
 #zns <- zsy.json.rx <- nc <- APP.
@@ -169,7 +169,7 @@ do
 	#check aplay pid.
 	if [ ! $pid_play ];then
 		#aplay -D plughw:tegrasndt186ref,0 -r 32000 -f S32_LE -c 2 -t raw < $TMP_DIR/zsy.clean &
-		aplay -D plughw:tegrasndt186ref,0 -r 48000 -f S16_LE -c 2 -t raw < $TMP_DIR/zsy.clean &
+		aplay -D plughw:tegrasndt186ref,0 -r 48000 -f S16_LE -c 2 -t raw -F 10 < $TMP_DIR/zsy.clean &
 		#cat < $TMP_DIR/zsy.clean > /dev/null &
 		pid_play=$!
 		echo $pid_play > /tmp/zsy/play.pid

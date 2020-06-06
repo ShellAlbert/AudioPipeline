@@ -18,12 +18,12 @@
 #include "zcvt.h"
 
 //data flow.
-//arecord -> zsy.noise -> zns ->zsy.clean -> aplay
-//								->zsy.opus	-> android
+//zsy.noise(i2s1 input) -> zns(sample rate convert & noise cut) -> zsy.clean(local play)
+//                                                              -> zsy.clean2(opus enc & tx) -> TcpClient
 #define FILE_NOISE				"/tmp/zsy/zsy.noise"
 #define FILE_NOISE2				"/tmp/zsy/zsy.noise2"
 #define FILE_CLEAN				"/tmp/zsy/zsy.clean"
-#define FILE_OPUS				"/tmp/zsy/zsy.opus"
+#define FILE_CLEAN2				"/tmp/zsy/zsy.clean2"
 
 //json ctrl.
 #include "cJSON.h"
@@ -71,10 +71,9 @@ int 			g_bOpusConnectedFlag = 0;
 int 			g_iOpusFd;
 
 //Demodulate Mode
-//0:32khz i2s
-//1:25khz i2s
+//0:32khz i2s1 input.
+//1:25khz analog capture input.
 int 			g_DeMode = 0;
-
 
 void gSIGHandler(int sigNo)
 {
@@ -85,7 +84,7 @@ void gSIGHandler(int sigNo)
 		case SIGTERM:
 			printf("zns:got Ctrl-C...\n");
 			g_bExitFlag = 1;
-			g_bOpusConnectedFlag = 1;
+			g_bOpusConnectedFlag = 0;
 			break;
 
 		default:
@@ -99,14 +98,15 @@ int gSaveCfgFile(ZCamPara * para);
 void * gThreadJson(void * para);
 int gParseJson(char * jsonData, int jsonLen, int fd);
 void * gThreadNs(void * para);
-void * gThreadOpus(void * para);
+void * gThreadEncTx(void * para);
+void * gThreadTCP(void * para);
 
 
 int main(int argc, char * *argv)
 {
-	pthread_t		tidJson, tidNs, tidOpus;
+	pthread_t		tidJson, tidNs, tidEncTx, tidTCP;
 
-	//write pid to file.
+	//write my pid to file.
 	int 			fd	= open(FILE_PID, O_RDWR | O_CREAT);
 
 	if (fd < 0) {
@@ -121,7 +121,7 @@ int main(int argc, char * *argv)
 	write(fd, pidBuffer, strlen(pidBuffer));
 	close(fd);
 
-	//Set the signal callback for Ctrl-C
+	//Set the signal callback for Ctrl-C.
 	signal(SIGINT, gSIGHandler);
 	signal(SIGPIPE, gSIGHandler);
 
@@ -143,15 +143,21 @@ int main(int argc, char * *argv)
 		return - 1;
 	}
 
-	if (pthread_create(&tidOpus, NULL, gThreadOpus, NULL)) {
-		fprintf(stderr, "failed to create opus thread!\n");
+	if (pthread_create(&tidEncTx, NULL, gThreadEncTx, NULL)) {
+		fprintf(stderr, "failed to create enctx thread!\n");
+		return - 1;
+	}
+
+	if (pthread_create(&tidTCP, NULL, gThreadTCP, NULL)) {
+		fprintf(stderr, "failed to create tcp thread!\n");
 		return - 1;
 	}
 
 
 	pthread_join(tidJson, NULL);
 	pthread_join(tidNs, NULL);
-	pthread_join(tidOpus, NULL);
+	pthread_join(tidEncTx, NULL);
+	pthread_join(tidTCP, NULL);
 
 	fprintf(stdout, "zns exit.\n");
 	return 0;
@@ -159,7 +165,9 @@ int main(int argc, char * *argv)
 void * gThreadNs(void * para)
 {
 	//for mkfifo in&out.
-	int 			fd_noise, fd_noise2,fd_clean;
+	//fd_noise(arecord i2s1)    ->  zns(sample rate convert & noise cut)->zsy.clean(i2s0 local play)
+	//fd_noise2(analog capture input)->zns(sample rate convert & noise cut)->zsy.clean2(opus enc & tx)
+	int 			fd_noise, fd_noise2,fd_clean,fd_clean2;
 
 	fd_noise			= open(FILE_NOISE, O_RDONLY);
 
@@ -183,6 +191,14 @@ void * gThreadNs(void * para)
 		g_bExitFlag 		= 1;
 		return NULL;
 	}
+
+	fd_clean2			= open(FILE_CLEAN2, O_RDWR);
+
+	if (fd_clean2 < 0) {
+		fprintf(stderr, "failed to open %s\n", FILE_CLEAN2);
+		g_bExitFlag 		= 1;
+		return NULL;
+	}
 	//sample rate convret.
 	zcvt_init();
 
@@ -194,90 +210,13 @@ void * gThreadNs(void * para)
 	gCamPara.m_iWebRtcGrade=0;
 	gCamPara.m_iWebRtcGradeShadow=0;
 	ns_init(0); 									//0~5.
-#if 0
-	int 			denoiseAlgorithm = 3;
-	int 			denoiseLevel = 0;
-	int 			enhancedType = 0;
-	int 			enhancedLevel = 0;
-	char			customBandGains[8];
-	char			preEmphasisFlag = 0;
 
-	memset(customBandGains, 0, 8);
-
-	if (ns_custom_init(denoiseAlgorithm, denoiseLevel, enhancedType, enhancedLevel, customBandGains, preEmphasisFlag)) {
-		fprintf(stderr, "ns:failed to init ns_custom_init().\n");
-		g_bExitFlag 		= 1;
-		return NULL;
-	}
-#endif
-
-	/** Allocates and initializes a multistream encoder state.
-	 * Call opus_multistream_encoder_destroy() to release
-	 * this object when finished.
-
-	 * @param coupled_streams <tt>int</tt>: Number of coupled (2 channel) streams
-	 *									 to encode.
-	 *									 This must be no larger than the total
-	 *									 number of streams.
-	 *									 Additionally, The total number of
-	 *									 encoded channels (<code>streams +
-	 *									 coupled_streams</code>) must be no
-	 *									 more than the number of input channels.
-	 * @param[in] mapping <code>const unsigned char[channels]</code>: Mapping from
-	 *					 encoded channels to input channels, as described in
-	 *					 @ref opus_multistream. As an extra constraint, the
-	 *					 multistream encoder does not allow encoding coupled
-	 *					 streams for which one channel is unused since this
-	 *					 is never a good idea.
-	 * @param application <tt>int</tt>: The target encoder application.
-	 *								 This must be one of the following:
-	 * <dl>
-	 * <dt>#OPUS_APPLICATION_VOIP</dt>
-	 * <dd>Process signal for improved speech intelligibility.</dd>
-	 * <dt>#OPUS_APPLICATION_AUDIO</dt>
-	 * <dd>Favor faithfulness to the original input.</dd>
-	 * <dt>#OPUS_APPLICATION_RESTRICTED_LOWDELAY</dt>
-	 * <dd>Configure the minimum possible coding delay by disabling certain modes
-	 * of operation.</dd>
-	 * </dl>
-	 * @param[out] error <tt>int *</tt>: Returns #OPUS_OK on success, or an error
-	 *									code (see @ref opus_errorcodes) on
-	 *									failure.
-	 */
-	int 			err;
-
-	//////////////////////encoder///////////////////////////
-	OpusEncoder *	encoder;
-
-	encoder 			= opus_encoder_create(48000, CHANNELS, OPUS_APPLICATION_AUDIO, &err);
-
-	if (err != OPUS_OK || encoder == NULL) {
-		fprintf(stderr, "error at create opus encode:%s.\n", opus_strerror(err));
-		g_bExitFlag 		= 1;
-		return NULL;
-	}
-
-	opus_encoder_ctl(encoder, OPUS_SET_BITRATE(64000));
-
-	//////////////////////////decoder///////////////////////
-	OpusDecoder *	decoder;
-
-	decoder 			= opus_decoder_create(48000, CHANNELS, &err);
-
-	if (err < 0 || decoder == NULL) {
-		fprintf(stderr, "failed to create decoder: %s\n", opus_strerror(err));
-		g_bExitFlag 		= 1;
-		return NULL;
-
-	}
-
-	//opus_decoder_ctl(decoder, OPUS_SET_BITRATE(64000));
 	fprintf(stdout, "gThreadNs:enter loop\n");
 
 	while (!g_bExitFlag) {
 		int 		iErrFlag = 0;
 
-		char		pcm3232TwoCh[1280*2];
+		char		    pcm3232TwoCh[1280*2];
 		char            pcm3232LftCh[1280];
 		char            pcm3232RhtCh[1280];
 
@@ -295,15 +234,9 @@ void * gThreadNs(void * para)
 		char            pcm4816RhtCh[480*BYTES_16BITS];
 		char            pcm4816TwoCh[480*CHANNELS*BYTES_16BITS];
 
-		//opus enc/dec.
-		opus_int16		in4816_2Ch[480*CHANNELS];
-		opus_int16		out[MAX_FRAME_SIZE * CHANNELS];
-		unsigned char	cbits[MAX_PACKET_SIZE];
-
-
 		if(!g_DeMode)
 		{
-			//1.read 32khz,32bit,2 ch pcm from zsy.noise.
+			//1.read 32khz,32bit,2 ch pcm from zsy.noise (i2s1 input)
 			int 			iOffset = 0;
 			int 			iNeedBytes = 1280*2; 
 			while (iNeedBytes > 0) {
@@ -344,7 +277,7 @@ void * gThreadNs(void * para)
 			zcvt_3232_to_4816(pcm3232LftCh,320*4,pcm4816LftCh,480*2);
 			zcvt_3232_to_4816(pcm3232RhtCh,320*4,pcm4816RhtCh,480*2);
 		}else{
-			//1.read 48khz,16bit,2 ch pcm from zsy.noise2.
+			//1.read 48khz,16bit,2 ch pcm from zsy.noise2 (analog input)
 			int                     iOffset = 0;
 			int                     iNeedBytes = 480*CHANNELS*BYTES_16BITS;
 			while (iNeedBytes > 0) {
@@ -426,10 +359,8 @@ void * gThreadNs(void * para)
 			iTwoChIndex+=2;
 		}
 
-
-#if 1
 		//6. write pcm to zsy.clean for local playback.
-		int 			iNeedWrBytes = sizeof(pcm4816TwoCh);//sizeof(short) *iDecBytes * CHANNELS;
+		int 			iNeedWrBytes = sizeof(pcm4816TwoCh);
 		int 			iWrOffset = 0;
 
 		while (iNeedWrBytes > 0) {
@@ -443,8 +374,137 @@ void * gThreadNs(void * para)
 			iNeedWrBytes		-= iWrBytes;
 			iWrOffset		+= iWrBytes;
 		}
-#endif
-		//7. convert from little-endian ordering to big-endian for encoding.
+		if(g_bOpusConnectedFlag)
+		{
+			//7. write pcm to zsy.clean for opus enc & tx.
+			int 			iNeedWrBytes2 = sizeof(pcm4816TwoCh);
+			int 			iWrOffset2 = 0;
+
+			while (iNeedWrBytes2 > 0) {
+				int 			iWrBytes2 = write(fd_clean2, pcm4816TwoCh + iWrOffset2, iNeedWrBytes2);
+
+				if (iWrBytes2 < 0) {
+					fprintf(stderr, "failed to write fd_clean2!\n");
+					break;
+				}
+
+				iNeedWrBytes2		-= iWrBytes2;
+				iWrOffset2		+= iWrBytes2;
+			}
+		}
+	}
+
+	close(fd_noise);
+	close(fd_noise2);
+	close(fd_clean);
+	close(fd_clean2);
+
+	fprintf(stdout, "gThreadNs:exit.\n");
+	return NULL;
+}
+
+void * gThreadEncTx(void * para)
+{
+	//for mkfifo in&out.
+	int 			 fd_clean2;
+
+	fd_clean2			= open(FILE_CLEAN2, O_RDONLY);
+
+	if (fd_clean2 < 0) {
+		fprintf(stderr, "failed to open %s\n", FILE_CLEAN2);
+		g_bExitFlag 		= 1;
+		return NULL;
+	}
+
+	/** Allocates and initializes a multistream encoder state.
+	 * Call opus_multistream_encoder_destroy() to release
+	 * this object when finished.
+
+	 * @param coupled_streams <tt>int</tt>: Number of coupled (2 channel) streams
+	 *									 to encode.
+	 *									 This must be no larger than the total
+	 *									 number of streams.
+	 *									 Additionally, The total number of
+	 *									 encoded channels (<code>streams +
+	 *									 coupled_streams</code>) must be no
+	 *									 more than the number of input channels.
+	 * @param[in] mapping <code>const unsigned char[channels]</code>: Mapping from
+	 *					 encoded channels to input channels, as described in
+	 *					 @ref opus_multistream. As an extra constraint, the
+	 *					 multistream encoder does not allow encoding coupled
+	 *					 streams for which one channel is unused since this
+	 *					 is never a good idea.
+	 * @param application <tt>int</tt>: The target encoder application.
+	 *								 This must be one of the following:
+	 * <dl>
+	 * <dt>#OPUS_APPLICATION_VOIP</dt>
+	 * <dd>Process signal for improved speech intelligibility.</dd>
+	 * <dt>#OPUS_APPLICATION_AUDIO</dt>
+	 * <dd>Favor faithfulness to the original input.</dd>
+	 * <dt>#OPUS_APPLICATION_RESTRICTED_LOWDELAY</dt>
+	 * <dd>Configure the minimum possible coding delay by disabling certain modes
+	 * of operation.</dd>
+	 * </dl>
+	 * @param[out] error <tt>int *</tt>: Returns #OPUS_OK on success, or an error
+	 *									code (see @ref opus_errorcodes) on
+	 *									failure.
+	 */
+	int 			err;
+
+	//////////////////////encoder///////////////////////////
+	OpusEncoder *	encoder;
+
+	encoder 			= opus_encoder_create(48000, CHANNELS, OPUS_APPLICATION_AUDIO, &err);
+
+	if (err != OPUS_OK || encoder == NULL) {
+		fprintf(stderr, "error at create opus encode:%s.\n", opus_strerror(err));
+		g_bExitFlag 		= 1;
+		return NULL;
+	}
+
+	opus_encoder_ctl(encoder, OPUS_SET_BITRATE(64000));
+
+	//////////////////////////decoder///////////////////////
+	OpusDecoder *	decoder;
+
+	decoder 			= opus_decoder_create(48000, CHANNELS, &err);
+
+	if (err < 0 || decoder == NULL) {
+		fprintf(stderr, "failed to create decoder: %s\n", opus_strerror(err));
+		g_bExitFlag 		= 1;
+		return NULL;
+	}
+	//opus_decoder_ctl(decoder, OPUS_SET_BITRATE(64000));
+
+	while(!g_bExitFlag)
+	{
+		int               iErrFlag=0;
+		char            pcm4816TwoCh[480*CHANNELS*BYTES_16BITS];
+		//opus enc/dec.
+		opus_int16		in4816_2Ch[480*CHANNELS];
+		opus_int16		out[MAX_FRAME_SIZE * CHANNELS];
+		unsigned char	cbits[MAX_PACKET_SIZE];
+
+		//1.read pcm from zsy.clean2.
+		int 			iOffset = 0;
+		int 			iNeedBytes = 480*CHANNELS*BYTES_16BITS; 
+		while (iNeedBytes > 0) {
+			int 			iRdBytes = read(fd_clean2, pcm4816TwoCh + iOffset, iNeedBytes);
+
+			if (iRdBytes < 0) {
+				fprintf(stderr, "failed to read opus!\n");
+				iErrFlag			= 1;
+				break;
+			}
+
+			iNeedBytes			-= iRdBytes;
+			iOffset 			+= iRdBytes;
+		}
+
+		if (iErrFlag) {
+			break;
+		}
+		//2.convert from little-endian ordering to big-endian for encoding.
 		for (int i = 0; i < (480*CHANNELS); i++) {
 			in4816_2Ch[i]				= pcm4816TwoCh[2 * i + 1] << 8 | pcm4816TwoCh[2 * i];
 		}
@@ -530,24 +590,14 @@ void * gThreadNs(void * para)
 			iWrOffset               += iWrBytes;
 		}
 #endif
-
 	}
-
-	close(fd_noise);
-	close(fd_noise2);
-	close(fd_clean);
 	opus_encoder_destroy(encoder);
 	opus_decoder_destroy(decoder);
-
-	fprintf(stdout, "gThreadNs:exit.\n");
+	close(fd_clean2);
 	return NULL;
 }
-
-
-void * gThreadOpus(void * para)
+void * gThreadTCP(void * para)
 {
-
-
 	int 			fd	= socket(AF_INET, SOCK_STREAM, 0);
 
 	if (fd < 0) {
