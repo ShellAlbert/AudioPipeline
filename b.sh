@@ -9,6 +9,14 @@ kill_arecord()
 		kill -9 $pid
 	done
 }
+kill_arecord2()
+{
+        ps aux | grep "arecord -D plughw:CARD=Device,DEV=0" | awk '{print $2}' | while read pid
+        do
+                echo "try to kill pid:" $pid
+                kill -9 $pid
+        done
+}
 kill_aplay()
 {
         ps aux | grep "aplay -D plughw:tegrasndt186ref,0" | awk '{print $2}' | while read pid
@@ -42,6 +50,14 @@ kill_zns()
         done
 }
 
+#check if analog capture exists.
+capExists=`aplay -L | grep "plughw:CARD=Device,DEV=0"`
+echo $capExists
+if [ ! $capExists ];then
+       echo "donot exists!"
+       exit -1
+fi
+
 #all temporary files are located in /tmp/zsy directory.
 TMP_DIR=/tmp/zsy
 mkdir $TMP_DIR
@@ -49,6 +65,7 @@ mkdir $TMP_DIR
 #i2s1 -> zsy.noise -> zns -> zsy.clean -> i2s0.
 #                         -> zsy.opus  -> APP.
 mkfifo $TMP_DIR/zsy.noise
+mkfifo $TMP_DIR/zsy.noise2
 mkfifo $TMP_DIR/zsy.clean
 mkfifo $TMP_DIR/zsy.opus
 
@@ -90,6 +107,7 @@ amixer -c tegrasndt186ref cset name='I2S2 input bit format' '32'
 
 #kill all first.
 kill_arecord
+kill_arecord2
 kill_aplay
 kill_json
 kill_uart
@@ -97,6 +115,7 @@ kill_zns
 
 #define pid variables.
 pid_rec=
+pid_rec2=
 pid_play=
 pid_opus=
 pid_json=
@@ -127,7 +146,26 @@ do
 			kill_arecord
 		fi
 	fi
-	
+
+	#check arecord2 pid.
+        if [ ! $pid_rec2 ];then
+                arecord -D plughw:CARD=Device,DEV=0 -r 48000 -f S16_LE -c 2 -t raw > $TMP_DIR/zsy.noise2 &
+                pid_rec2=$!
+                echo $pid_rec2 > /tmp/zsy/rec2.pid
+                echo "restart rec2 pid okay:" $pid_rec2
+        else
+                kill -0 $pid_rec2
+                if [ $? -eq 0 ];then
+                        echo "rec2 pid okay:" $pid_rec2
+                else
+                        echo "rec2 pid error"
+                        pid_rec2=
+                        kill_arecord2
+                fi
+        fi
+
+
+
 	#check aplay pid.
 	if [ ! $pid_play ];then
 		#aplay -D plughw:tegrasndt186ref,0 -r 32000 -f S32_LE -c 2 -t raw < $TMP_DIR/zsy.clean &

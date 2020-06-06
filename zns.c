@@ -21,6 +21,7 @@
 //arecord -> zsy.noise -> zns ->zsy.clean -> aplay
 //								->zsy.opus	-> android
 #define FILE_NOISE				"/tmp/zsy/zsy.noise"
+#define FILE_NOISE2				"/tmp/zsy/zsy.noise2"
 #define FILE_CLEAN				"/tmp/zsy/zsy.clean"
 #define FILE_OPUS				"/tmp/zsy/zsy.opus"
 
@@ -158,12 +159,19 @@ int main(int argc, char * *argv)
 void * gThreadNs(void * para)
 {
 	//for mkfifo in&out.
-	int 			fd_noise, fd_clean;
+	int 			fd_noise, fd_noise2,fd_clean;
 
 	fd_noise			= open(FILE_NOISE, O_RDONLY);
 
 	if (fd_noise < 0) {
 		fprintf(stderr, "failed to open %s\n", FILE_NOISE);
+		g_bExitFlag 		= 1;
+		return NULL;
+	}
+	fd_noise2			= open(FILE_NOISE2, O_RDONLY);
+
+	if (fd_noise2 < 0) {
+		fprintf(stderr, "failed to open %s\n", FILE_NOISE2);
 		g_bExitFlag 		= 1;
 		return NULL;
 	}
@@ -293,49 +301,85 @@ void * gThreadNs(void * para)
 		unsigned char	cbits[MAX_PACKET_SIZE];
 
 
+		if(!g_DeMode)
+		{
+			//1.read 32khz,32bit,2 ch pcm from zsy.noise.
+			int 			iOffset = 0;
+			int 			iNeedBytes = 1280*2; 
+			while (iNeedBytes > 0) {
+				int 			iRdBytes = read(fd_noise, pcm3232TwoCh + iOffset, iNeedBytes);
 
-		//1.read 32khz,32bit,2 ch pcm from zsy.noise.
-		int 			iOffset = 0;
-		int 			iNeedBytes = 1280*2; 
+				if (iRdBytes < 0) {
+					fprintf(stderr, "failed to read opus!\n");
+					iErrFlag			= 1;
+					break;
+				}
 
-		while (iNeedBytes > 0) {
-			int 			iRdBytes = read(fd_noise, pcm3232TwoCh + iOffset, iNeedBytes);
+				iNeedBytes			-= iRdBytes;
+				iOffset 			+= iRdBytes;
+			}
 
-			if (iRdBytes < 0) {
-				fprintf(stderr, "failed to read opus!\n");
-				iErrFlag			= 1;
+			if (iErrFlag) {
 				break;
 			}
 
-			iNeedBytes			-= iRdBytes;
-			iOffset 			+= iRdBytes;
-		}
-
-		if (iErrFlag) {
-			break;
-		}
-
-		//2.split stereo to single channel.
-		int iLftChIndex=0,iRhtChIndex=0;
-		int iChFlag=0;
-		for(int i=0;i<(1280*2);i+=4)
-		{
-			if(iChFlag)
+			//2.split stereo to single channel.
+			int iLftChIndex=0,iRhtChIndex=0;
+			int iChFlag=0;
+			for(int i=0;i<(1280*2);i+=4)
 			{
-				memcpy(&pcm3232LftCh[iLftChIndex],&pcm3232TwoCh[i],4);
-				iLftChIndex+=4;
-			}else{
-				memcpy(&pcm3232RhtCh[iRhtChIndex],&pcm3232TwoCh[i],4);
-				iRhtChIndex+=4;
+				if(iChFlag)
+				{
+					memcpy(&pcm3232LftCh[iLftChIndex],&pcm3232TwoCh[i],4);
+					iLftChIndex+=4;
+				}else{
+					memcpy(&pcm3232RhtCh[iRhtChIndex],&pcm3232TwoCh[i],4);
+					iRhtChIndex+=4;
+				}
+				iChFlag=!iChFlag;
 			}
-			iChFlag=!iChFlag;
+
+			//3.do 32khz/32bit to 48khz/16bit convert.
+			//input each size is 320*4=1280, output each size is 480*2=960.
+			zcvt_3232_to_4816(pcm3232LftCh,320*4,pcm4816LftCh,480*2);
+			zcvt_3232_to_4816(pcm3232RhtCh,320*4,pcm4816RhtCh,480*2);
+		}else{
+			//1.read 48khz,16bit,2 ch pcm from zsy.noise2.
+			int                     iOffset = 0;
+			int                     iNeedBytes = 480*CHANNELS*BYTES_16BITS;
+			while (iNeedBytes > 0) {
+				int                     iRdBytes = read(fd_noise2, pcm4816TwoCh + iOffset, iNeedBytes);
+
+				if (iRdBytes < 0) {
+					fprintf(stderr, "failed to read opus!\n");
+					iErrFlag                        = 1;
+					break;
+				}
+
+				iNeedBytes                      -= iRdBytes;
+				iOffset                         += iRdBytes;
+			}
+
+			if (iErrFlag) {
+				break;
+			}
+			//2.split stereo to single channel.
+			int iLftChIndex=0,iRhtChIndex=0;
+			int iChFlag=0;
+			for(int i=0;i<(480*CHANNELS*BYTES_16BITS);i+=4)
+			{
+				if(iChFlag)
+				{
+					memcpy(&pcm4816LftCh[iLftChIndex],&pcm4816TwoCh[i],4);
+					iLftChIndex+=4;
+				}else{
+					memcpy(&pcm4816RhtCh[iRhtChIndex],&pcm4816TwoCh[i],4);
+					iRhtChIndex+=4;
+				}
+				iChFlag=!iChFlag;
+			}
+
 		}
-
-		//3.do 32khz/32bit to 48khz/16bit convert.
-		//input each size is 320*4=1280, output each size is 480*2=960.
-		zcvt_3232_to_4816(pcm3232LftCh,320*4,pcm4816LftCh,480*2);
-		zcvt_3232_to_4816(pcm3232RhtCh,320*4,pcm4816RhtCh,480*2);
-
 		//4.noise suppression apply on each channel.
 		switch (gCamPara.m_iDeNoise)
 		{
@@ -359,9 +403,9 @@ void * gThreadNs(void * para)
 				//libns.so only process 960 bytes each time in 48khz,16bit.
 				if(gCamPara.m_iWebRtcGrade!=gCamPara.m_iWebRtcGradeShadow)
 				{
-                			ns_uninit();
-                			char customBandGains[8]={0};
-                			ns_custom_init(6,gCamPara.m_iWebRtcGrade,0,0,customBandGains,0);
+					ns_uninit();
+					char customBandGains[8]={0};
+					ns_custom_init(6,gCamPara.m_iWebRtcGrade,0,0,customBandGains,0);
 					gCamPara.m_iWebRtcGradeShadow=gCamPara.m_iWebRtcGrade;
 				}
 				ns_processing(pcm4816LftCh,480*BYTES_16BITS);
@@ -383,7 +427,7 @@ void * gThreadNs(void * para)
 		}
 
 
-#if 0
+#if 1
 		//6. write pcm to zsy.clean for local playback.
 		int 			iNeedWrBytes = sizeof(pcm4816TwoCh);//sizeof(short) *iDecBytes * CHANNELS;
 		int 			iWrOffset = 0;
@@ -425,7 +469,7 @@ void * gThreadNs(void * para)
 			int 			len = write(g_iOpusFd, &iEncBytesBE, sizeof(iEncBytesBE));
 
 			if (len != sizeof(iEncBytesBE)) {
-				fprintf(stderr, "tx opus len failed:%d,%d\n", len, sizeof(iEncBytesBE));
+				fprintf(stderr, "tx opus len failed:%d,%ld\n", len, sizeof(iEncBytesBE));
 				g_bOpusConnectedFlag = 0;
 			}
 			else {
@@ -450,7 +494,7 @@ void * gThreadNs(void * para)
 
 			}
 		}
-
+#if 0
 		//10.decode.
 		/* Decode the data. In this example, frame_size will be constant because
 		   the encoder is using a constant frame size. However, that may not
@@ -463,8 +507,9 @@ void * gThreadNs(void * para)
 			continue;
 		}
 		//fprintf(stdout,"decoder okay:%d blocks\n",iDecBlks);
-
-		/* Convert from big-endian to little-endian ordering */
+#endif
+#if 0
+		/* Convert from big-endian to little-endian ordering for local play*/
 		for (int i = 0; i < CHANNELS * iDecBlks; i++) {
 			pcm4816TwoCh[2 * i]		= out[i] &0xFF;
 			pcm4816TwoCh[2 * i + 1]	= (out[i] >> 8) & 0xFF;
@@ -484,11 +529,12 @@ void * gThreadNs(void * para)
 			iNeedWrBytes            -= iWrBytes;
 			iWrOffset               += iWrBytes;
 		}
-
+#endif
 
 	}
 
 	close(fd_noise);
+	close(fd_noise2);
 	close(fd_clean);
 	opus_encoder_destroy(encoder);
 	opus_decoder_destroy(decoder);
@@ -651,7 +697,7 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 	if (jCam1CenterXY) {
 		char *			cValue = cJSON_Print(jCam1CenterXY);
-		printf("cam1centerxy:%d,%s\n",strlen(cValue),cValue);
+		printf("cam1centerxy:%ld,%s\n",strlen(cValue),cValue);
 		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
 		}
@@ -683,7 +729,7 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 	if (jCam2CenterXY) {
 		char *			cValue = cJSON_Print(jCam2CenterXY);
-		printf("cam2centerxy:%d,%s\n",strlen(cValue),cValue);
+		printf("cam2centerxy:%ld,%s\n",strlen(cValue),cValue);
 
 		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
@@ -716,7 +762,7 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 
 	if (jCam3CenterXY) {
 		char *			cValue = cJSON_Print(jCam3CenterXY);
-		printf("cam3centerxy:%d,%s\n",strlen(cValue),cValue);
+		printf("cam3centerxy:%ld,%s\n",strlen(cValue),cValue);
 
 		if (!strcmp(cValue, "\"query\"")) {
 			//only query,no need to write.
@@ -915,9 +961,11 @@ int gParseJson(char * jsonData, int jsonLen, int fd)
 		}
 		else if (!strcmp(cValue, "\"Normal\"")) {
 			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x00\"");
+			g_DeMode=0;
 		}
 		else if (!strcmp(cValue, "\"Wobble\"")) {
 			system("spidev_test -D /dev/spidev3.0 -H -p \"\\x00\\x00\\x01\\x00\\x00\\x00\\x00\\x01\"");
+			g_DeMode=1;
 		}
 	}
 
