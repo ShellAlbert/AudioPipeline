@@ -1,10 +1,4 @@
-#!/bin/bash
-
-
-# i2s digital audio sample.
-#cd /home/yntp16/wuhan2020/AudioPipeline
-#./digiaudio.sh &
-
-#usb analog audio sample.
-#cd /home/zhangshaoyan/p16
-#./monitor.sh &
+#!/bin/bash -e
+echo "fm2020 okay by zhangshaoyan." > /home/zhangshaoyan/fm.okay
+/bin/bash /usr/local/fm2020/fm.sh &
+exit 0

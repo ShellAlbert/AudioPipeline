@@ -1,0 +1,9 @@
+ssh zhangshaoyan@10.42.0.1
+g1st49md5cpea
+
+scp zhangshaoyan@10.42.0.1:/lib/systemd/system/rc-local.service   rc-local.service
+
+cfs(change fifo size) change to 4096 to reduce audio latency.
+but if fifo size is less,the audio will contain pupu noise.
+so, we'd better to keep 8192.(4096*2).
+
